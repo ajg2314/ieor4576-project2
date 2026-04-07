@@ -72,7 +72,7 @@ OUTPUT — HypothesisReport:
 """
 
 
-@function_tool
+@function_tool(strict_mode=False)
 def save_report(title: str, content: str) -> str:
     """
     Save a markdown report to disk as a persistent artifact.
@@ -85,7 +85,7 @@ def save_report(title: str, content: str) -> str:
     return str(path.relative_to(ARTIFACTS_DIR.parent))
 
 
-@function_tool
+@function_tool(strict_mode=False)
 def run_python(code: str) -> dict:
     """Execute Python code for a final visualization or computation."""
     return execute_python(code)

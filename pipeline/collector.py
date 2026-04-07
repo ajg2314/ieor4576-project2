@@ -69,7 +69,7 @@ suitable for the EDA agent to analyze.
 """
 
 
-@function_tool
+@function_tool(strict_mode=False)
 def lookup_ticker(ticker_or_name: str) -> dict:
     """Look up a stock ticker to get its SEC CIK number and full company name."""
     try:
@@ -78,7 +78,7 @@ def lookup_ticker(ticker_or_name: str) -> dict:
         return search_companies_by_name(ticker_or_name, max_results=5)
 
 
-@function_tool
+@function_tool(strict_mode=False)
 def fetch_company_financials(ticker: str, concepts: list[str] | None = None) -> dict:
     """
     Retrieve structured XBRL financial data for one company from SEC EDGAR.
@@ -88,7 +88,7 @@ def fetch_company_financials(ticker: str, concepts: list[str] | None = None) -> 
     return get_company_financials(ticker, concepts)
 
 
-@function_tool
+@function_tool(strict_mode=False)
 def fetch_sector_financials(tickers: list[str], concepts: list[str] | None = None) -> dict:
     """
     Retrieve financial data for multiple companies (a sector basket) from SEC EDGAR.
@@ -96,7 +96,7 @@ def fetch_sector_financials(tickers: list[str], concepts: list[str] | None = Non
     return get_sector_financials(tickers, concepts)
 
 
-@function_tool
+@function_tool(strict_mode=False)
 def fetch_filing_text(ticker: str, form_type: str = "10-K") -> dict:
     """
     Scrape and extract the MD&A section from a company's most recent SEC filing.

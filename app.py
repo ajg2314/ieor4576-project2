@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from agents.orchestrator import run_analysis
+from pipeline.orchestrator import run_analysis
 
 app = FastAPI(title="Multi-Agent Data Analyst")
 

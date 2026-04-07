@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["agents", "tools", "models"]
+packages = ["pipeline", "tools", "models"]
 
 [build-system]
 requires = ["hatchling"]

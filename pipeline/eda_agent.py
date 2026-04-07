@@ -77,13 +77,13 @@ Return EDAFindings with:
 """
 
 
-@function_tool
+@function_tool(strict_mode=False)
 def stats_tool(records: list[dict], numeric_columns: list[str], group_by: str | None = None) -> dict:
     """Compute descriptive statistics (mean, median, std, correlations, growth rate) over financial records."""
     return compute_statistics(records, numeric_columns, group_by=group_by)
 
 
-@function_tool
+@function_tool(strict_mode=False)
 def filter_group_tool(
     records: list[dict],
     filter_column: str,
@@ -103,7 +103,7 @@ def filter_group_tool(
     )
 
 
-@function_tool
+@function_tool(strict_mode=False)
 def run_python(code: str) -> dict:
     """
     Execute Python code (pandas, numpy, matplotlib) in a sandboxed subprocess.
