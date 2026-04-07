@@ -3,8 +3,8 @@
 Step 2: Explore. This agent:
 - Computes financial metrics: YoY growth rates, operating margins, sector medians
 - Groups and compares companies within a sector
-- Writes and executes Python (pandas, matplotlib) at runtime for deeper analysis
-- Generates comparison charts (revenue trends, margin evolution, sector scatter plots)
+- Writes and executes Python (pandas) at runtime for derived metrics
+- Generates professional consulting-quality charts via create_chart
 - Returns structured EDAFindings with a specific key insight
 
 Grab bag: Code Execution, Data Visualization
@@ -18,6 +18,7 @@ from agents.extensions.models.litellm_model import LitellmModel
 
 from tools.statistics import compute_statistics, group_and_filter
 from tools.code_executor import execute_python
+from tools.visualizer import line_chart, bar_chart, waterfall_chart
 from models.schemas import EDAFindings
 
 LITELLM_MODEL_ID = f"vertex_ai/{os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')}"
@@ -44,16 +45,29 @@ TOOLS AVAILABLE:
 2. `filter_group_tool` — segment data by company, year, or metric.
    Use to compare groups (e.g., "which companies have margin > 30%?")
 
-3. `run_python` — write and execute pandas/matplotlib code at runtime.
-   You MUST call this at least twice to generate charts. Required charts:
-   a) Revenue trend chart — line chart with one series per company, x=year, y=revenue in billions.
-      Use a dark background (plt.style.use('dark_background')), distinct colors per company,
-      clear labels, gridlines, and a legend. Title: "Revenue Trend".
-   b) Margin comparison chart — grouped bar chart of operating margin % per company per year,
-      OR a line chart of margin over time. Title: "Operating Margin %".
-   Additional charts are encouraged (R&D spend, growth rates, etc.)
-   Save every chart: plt.savefig(f'{ARTIFACTS_DIR}/chart_name.png', dpi=150, bbox_inches='tight')
-   plt.close() after each save. Print computed values to stdout.
+3. `run_python` — write and execute pandas/numpy code for derived metrics.
+   Use for margin calculations, CAGR, growth rates, ranking tables.
+   Print computed values to stdout. Do NOT use matplotlib here — use create_chart instead.
+
+4. `create_chart` — generate professional consulting-style charts (Bloomberg/McKinsey quality).
+   You MUST call this at least twice. Required charts:
+   a) Revenue trend line chart — one series per company, x=fiscal year, y=revenue in billions.
+   b) Operating margin comparison — one series per company, operating_income/revenue as %.
+
+   create_chart signature:
+     chart_type: "line" | "bar" | "waterfall"
+     series_data: dict mapping series_name → dict of {x_label: y_value}
+       Example: {"AAPL": {"2019": 260.17, "2020": 274.52}, "MSFT": {"2019": 125.84, "2020": 143.02}}
+     title: bold chart title string
+     subtitle: gray subtitle (e.g., "Annual 10-K filings | USD billions")
+     y_format: "billions" | "pct" | "raw"
+     filename: short snake_case base name (e.g., "revenue_trend")
+
+   IMPORTANT — building series_data from records:
+   - Filter records where metric == "revenue" (or "operating_income", etc.)
+   - Group by ticker, then by fiscal_year → value_billions
+   - Only include 10-K rows (form == "10-K") for clean annual data
+   - If you need margin %, compute it in run_python first, then pass computed values to create_chart
 
 FINANCIAL ANALYSIS CHECKLIST:
 - Revenue: absolute levels, YoY growth %, CAGR
@@ -73,7 +87,7 @@ Return EDAFindings with:
 OUTPUT FORMAT: Your final response must be a single JSON object with these exact keys:
 {
   "findings": [
-    {"tool_name": "...", "description": "...", "value": ..., "artifact_path": null}
+    {"tool_name": "...", "description": "...", "value": ..., "artifact_path": "artifacts/chart_abc123.png or null"}
   ],
   "key_insight": "<the single most important pattern found, with specific numbers>",
   "recommended_hypothesis_direction": "<what the hypothesis agent should focus on>"
@@ -112,14 +126,48 @@ def filter_group_tool(
 @function_tool(strict_mode=False)
 def run_python(code: str) -> dict:
     """
-    Execute Python code (pandas, numpy, matplotlib) in a sandboxed subprocess.
+    Execute Python code (pandas, numpy) in a sandboxed subprocess.
 
-    The preamble already imports: pandas as pd, numpy as np, matplotlib, plt.
-    ARTIFACTS_DIR is pre-defined — save charts like:
-        plt.savefig(f'{ARTIFACTS_DIR}/revenue_trend.png', dpi=150, bbox_inches='tight')
-    Print computed metrics to stdout for capture.
+    Use for computing derived metrics: margins, CAGR, growth rates, ranking tables.
+    Print computed values to stdout for capture. Do NOT generate charts here —
+    use create_chart instead for all visualizations.
     """
     return execute_python(code)
+
+
+@function_tool(strict_mode=False)
+def create_chart(
+    chart_type: str,
+    series_data: dict,
+    title: str,
+    subtitle: str = "",
+    y_format: str = "billions",
+    filename: str = "chart",
+) -> str:
+    """
+    Generate a professional consulting-style chart (Bloomberg/McKinsey quality).
+
+    Args:
+        chart_type: "line" | "bar" | "waterfall"
+        series_data: For line/bar — {series_name: {x_label: y_value}}.
+                     For waterfall — {label: value} (ordered dict, first/last are totals).
+                     Example: {"AAPL": {"2019": 260.17, "2020": 274.52}, "MSFT": {"2019": 125.84}}
+        title: Bold chart title shown above the chart.
+        subtitle: Smaller gray subtitle (e.g. "Annual 10-K | USD billions").
+        y_format: "billions" (formats as $260B/$1.2T), "pct" (formats as 23.4%), "raw" (no formatting).
+        filename: Short snake_case base name (uuid suffix added). E.g. "revenue_trend".
+
+    Returns:
+        Relative path to saved PNG, e.g. "artifacts/revenue_trend_abc123.png"
+    """
+    if chart_type == "line":
+        return line_chart(series_data, title, subtitle=subtitle, y_format=y_format, filename=filename)
+    elif chart_type == "bar":
+        return bar_chart(series_data, title, subtitle=subtitle, y_format=y_format, filename=filename)
+    elif chart_type == "waterfall":
+        return waterfall_chart(series_data, title, subtitle=subtitle, y_format=y_format, filename=filename)
+    else:
+        return f"Unknown chart_type '{chart_type}'. Use 'line', 'bar', or 'waterfall'."
 
 
 def build_eda_agent() -> Agent:
@@ -127,5 +175,5 @@ def build_eda_agent() -> Agent:
         name="EDA",
         model=_make_model(),
         instructions=EDA_PROMPT,
-        tools=[stats_tool, filter_group_tool, run_python],
+        tools=[stats_tool, filter_group_tool, run_python, create_chart],
     )

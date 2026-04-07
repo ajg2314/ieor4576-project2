@@ -9,6 +9,7 @@ from .sec_edgar import (
     get_sector_financials,
     get_recent_filing_text,
 )
+from .visualizer import line_chart, bar_chart, waterfall_chart
 
 __all__ = [
     "fetch_api",
@@ -22,4 +23,7 @@ __all__ = [
     "get_company_financials",
     "get_sector_financials",
     "get_recent_filing_text",
+    "line_chart",
+    "bar_chart",
+    "waterfall_chart",
 ]
