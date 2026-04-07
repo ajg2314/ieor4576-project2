@@ -1,8 +1,11 @@
-"""Collector Agent — retrieves real-world data from external sources.
+"""Collector Agent — retrieves real-world data from SEC EDGAR.
 
 Step 1: Collect. Two retrieval methods:
-  1. REST API calls (dynamic endpoint + params constructed at runtime)
-  2. SQL queries via DuckDB on local large datasets (CSV/Parquet)
+  1. EDGAR XBRL API   — structured financial data (revenue, income, margins) per company.
+                        The raw company facts JSON is hundreds of KB; the agent queries
+                        specific concepts and periods rather than loading everything.
+  2. Filing text scraping — fetches and extracts the MD&A section of actual 10-K/10-Q
+                            documents for qualitative signals and management commentary.
 """
 
 from __future__ import annotations
@@ -11,8 +14,13 @@ import os
 from agents import Agent, function_tool
 from agents.extensions.models.litellm_model import LitellmModel
 
-from tools.api_client import fetch_api
-from tools.sql_query import execute_sql, list_available_datasets
+from tools.sec_edgar import (
+    resolve_ticker,
+    search_companies_by_name,
+    get_company_financials,
+    get_sector_financials,
+    get_recent_filing_text,
+)
 from models.schemas import DataBundle
 
 LITELLM_MODEL_ID = f"vertex_ai/{os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')}"
@@ -29,47 +37,72 @@ def _make_model() -> LitellmModel:
 
 
 COLLECTOR_PROMPT = """\
-You are the Data Collector agent in a multi-agent data analysis system.
+You are the Data Collector agent for a Sector Analyst system.
 
-Your sole responsibility is to retrieve real-world data relevant to the user's
-analytics question. You have two tools:
+Your job is to retrieve real SEC filing data for the companies or sector
+the user is asking about. You have access to two distinct data sources:
 
-1. fetch_api — call any public REST API. Construct the URL and query parameters
-   dynamically based on the question. Do not use hard-coded data.
-   Examples: FRED economic data, Open-Meteo weather, NYC Open Data, sports APIs.
+RETRIEVAL METHOD 1 — EDGAR XBRL Structured Financial Data:
+- Use `lookup_ticker` to resolve a company name or ticker to its SEC CIK number.
+- Use `fetch_company_financials` to retrieve structured financial data for one company
+  (revenue, net income, operating income, gross profit, R&D, etc.) from SEC filings.
+- Use `fetch_sector_financials` to retrieve data for multiple companies at once.
+- Available financial concepts: revenue, net_income, operating_income, gross_profit,
+  operating_expenses, eps, total_assets, total_debt, cash, rd_expense
 
-2. execute_sql — write and run SQL queries using DuckDB against large local
-   datasets (CSV/Parquet). Use list_datasets to see what files are available.
+RETRIEVAL METHOD 2 — Filing Text Scraping (MD&A):
+- Use `fetch_filing_text` to scrape the Management Discussion & Analysis (MD&A)
+  section from a company's most recent 10-K or 10-Q filing.
+- This provides qualitative context: guidance, risk factors, segment commentary.
+- Use this for at least one company to complement the quantitative data.
 
-Steps:
-1. Decide which data source(s) are most relevant to the question.
-2. Call fetch_api and/or execute_sql to retrieve data.
-3. Return a structured DataBundle summarizing what you retrieved and why.
+PROCESS:
+1. Parse the user's question to identify the sector or companies of interest.
+2. If the user mentions a sector (e.g. "semiconductors"), identify 3–5 major companies.
+   Use your knowledge of which companies belong to the sector, then verify tickers.
+3. Call `fetch_sector_financials` for the full company basket.
+4. Call `fetch_filing_text` for at least one key company to get qualitative data.
+5. Return a structured DataBundle summarizing what you retrieved.
 
-Important:
-- Do not hard-code data into your response.
-- Data must be retrieved at runtime via tool calls.
-- If the first retrieval is insufficient, try a refined query.
-- Return the raw records plus a short summary of what you found.
+The DataBundle's `records` field should be a flat list of financial data points
+suitable for the EDA agent to analyze.
 """
 
 
 @function_tool
-async def fetch_api_tool(url: str, params: dict | None = None) -> dict:
-    """Fetch data from a REST API endpoint with optional query parameters."""
-    return await fetch_api(url, params=params)
+def lookup_ticker(ticker_or_name: str) -> dict:
+    """Look up a stock ticker to get its SEC CIK number and full company name."""
+    try:
+        return resolve_ticker(ticker_or_name)
+    except ValueError:
+        return search_companies_by_name(ticker_or_name, max_results=5)
 
 
 @function_tool
-def sql_query_tool(query: str) -> dict:
-    """Execute a SQL query using DuckDB against local dataset files."""
-    return execute_sql(query)
+def fetch_company_financials(ticker: str, concepts: list[str] | None = None) -> dict:
+    """
+    Retrieve structured XBRL financial data for one company from SEC EDGAR.
+    concepts can include: revenue, net_income, operating_income, gross_profit,
+    operating_expenses, eps, total_assets, total_debt, cash, rd_expense
+    """
+    return get_company_financials(ticker, concepts)
 
 
 @function_tool
-def list_datasets() -> list[str]:
-    """List available dataset files that can be queried with SQL."""
-    return list_available_datasets()
+def fetch_sector_financials(tickers: list[str], concepts: list[str] | None = None) -> dict:
+    """
+    Retrieve financial data for multiple companies (a sector basket) from SEC EDGAR.
+    """
+    return get_sector_financials(tickers, concepts)
+
+
+@function_tool
+def fetch_filing_text(ticker: str, form_type: str = "10-K") -> dict:
+    """
+    Scrape and extract the MD&A section from a company's most recent SEC filing.
+    form_type: '10-K' (annual) or '10-Q' (quarterly)
+    """
+    return get_recent_filing_text(ticker, form_type)
 
 
 def build_collector_agent() -> Agent:
@@ -77,6 +110,6 @@ def build_collector_agent() -> Agent:
         name="Collector",
         model=_make_model(),
         instructions=COLLECTOR_PROMPT,
-        tools=[fetch_api_tool, sql_query_tool, list_datasets],
+        tools=[lookup_ticker, fetch_company_financials, fetch_sector_financials, fetch_filing_text],
         output_type=DataBundle,
     )

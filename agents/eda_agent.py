@@ -1,10 +1,11 @@
-"""EDA Agent — performs exploratory data analysis on collected data.
+"""EDA Agent — performs exploratory financial data analysis on SEC filing data.
 
 Step 2: Explore. This agent:
-- Computes statistics and groups/filters data via deterministic tools
-- Writes and executes Python code (pandas, matplotlib) at runtime
-- Can fan out to multiple tools in parallel
-- Returns structured EDAFindings with a key insight
+- Computes financial metrics: YoY growth rates, operating margins, sector medians
+- Groups and compares companies within a sector
+- Writes and executes Python (pandas, matplotlib) at runtime for deeper analysis
+- Generates comparison charts (revenue trends, margin evolution, sector scatter plots)
+- Returns structured EDAFindings with a specific key insight
 
 Grab bag: Code Execution, Data Visualization
 """
@@ -17,7 +18,7 @@ from agents.extensions.models.litellm_model import LitellmModel
 
 from tools.statistics import compute_statistics, group_and_filter
 from tools.code_executor import execute_python
-from models.schemas import EDAFindings, DataBundle
+from models.schemas import EDAFindings
 
 LITELLM_MODEL_ID = f"vertex_ai/{os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')}"
 
@@ -33,37 +34,52 @@ def _make_model() -> LitellmModel:
 
 
 EDA_PROMPT = """\
-You are the EDA (Exploratory Data Analysis) agent in a multi-agent data analysis system.
+You are the EDA (Exploratory Data Analysis) agent for a Sector Analyst system.
 
-You receive a DataBundle from the Collector agent and the user's original question.
-Your job is to explore the data thoroughly before forming any conclusions.
+You receive a DataBundle containing SEC EDGAR financial data for one or more companies.
+Your job is to explore the data and surface SPECIFIC findings — numbers, percentages,
+trends, and anomalies — that will ground the hypothesis.
 
-You must NOT summarize the raw data. You must compute specific metrics,
-surface patterns, and identify anomalies that will ground the hypothesis.
+Do NOT summarize raw data. Compute metrics and find patterns.
 
-Tools available:
-1. stats_tool — compute means, medians, std, correlations, growth rates
-2. filter_group_tool — segment data by category, time window, or threshold
-3. run_python — write and execute pandas/numpy/matplotlib code at runtime.
-   Use this for complex analysis that the other tools can't handle.
-   For visualizations, save figures to artifacts/ using plt.savefig().
+TOOLS AVAILABLE:
 
-Process:
-1. Examine the DataBundle. Identify numeric columns, categorical columns, time fields.
-2. Run compute_statistics on key numeric columns.
-3. If time series data: compute growth rates, rolling averages in Python code.
-4. If categorical: use filter_group to segment and compare groups.
-5. Generate at least one visualization using run_python (line chart, bar chart, etc.)
-6. Identify the single most important pattern or anomaly you found.
-7. Return structured EDAFindings with your findings and a recommended hypothesis direction.
+1. `stats_tool` — compute descriptive statistics over financial records.
+   Use this to get means, medians, growth rates, and correlations across companies.
 
-Be specific. "Revenue grew 12% YoY" is better than "Revenue increased over time."
+2. `filter_group_tool` — segment data by company, year, or metric.
+   Use to compare groups (e.g., "which companies have margin > 30%?")
+
+3. `run_python` — write and execute pandas/matplotlib code at runtime.
+   This is your most powerful tool for financial analysis. Use it for:
+   - Computing YoY revenue growth rates: (current - prior) / prior * 100
+   - Computing operating margins: operating_income / revenue * 100
+   - Plotting multi-company revenue trends (line chart, one series per company)
+   - Plotting sector margin comparison (bar chart)
+   - Computing CAGR over the full available period
+   Save all charts with: plt.savefig(f'{ARTIFACTS_DIR}/chart_name.png', dpi=150, bbox_inches='tight')
+   Print computed metrics to stdout.
+
+FINANCIAL ANALYSIS CHECKLIST:
+- Revenue: absolute levels, YoY growth %, CAGR
+- Profitability: gross margin %, operating margin %, net margin %
+- Efficiency: R&D as % of revenue (for tech/semis)
+- Cross-company: rank companies by growth rate, margin, or scale
+- Trend: is the sector expanding or contracting? Accelerating or decelerating?
+- Anomaly: which company is an outlier vs sector peers?
+
+OUTPUT:
+Return EDAFindings with:
+- A list of specific findings (each with a tool name, description, and computed value)
+- `key_insight`: the single most important pattern (e.g. "NVDA operating margin expanded
+  from 20% to 55% over 4 years, far outpacing AMD at 8% and INTC at -4%")
+- `recommended_hypothesis_direction`: what the Hypothesis agent should focus on
 """
 
 
 @function_tool
 def stats_tool(records: list[dict], numeric_columns: list[str], group_by: str | None = None) -> dict:
-    """Compute descriptive statistics (mean, median, std, correlations, growth rate) over data records."""
+    """Compute descriptive statistics (mean, median, std, correlations, growth rate) over financial records."""
     return compute_statistics(records, numeric_columns, group_by=group_by)
 
 
@@ -78,7 +94,7 @@ def filter_group_tool(
     aggregate_column: str | None = None,
     aggregate_fn: str = "mean",
 ) -> dict:
-    """Filter records and optionally group and aggregate by a column."""
+    """Filter financial records and optionally group/aggregate by a column (company, year, etc.)."""
     return group_and_filter(
         records, filter_column, filter_value=filter_value,
         filter_gt=filter_gt, filter_lt=filter_lt,
@@ -91,8 +107,11 @@ def filter_group_tool(
 def run_python(code: str) -> dict:
     """
     Execute Python code (pandas, numpy, matplotlib) in a sandboxed subprocess.
-    Save charts with: plt.savefig(f'{ARTIFACTS_DIR}/chart_name.png', dpi=150, bbox_inches='tight')
-    Print computed values to stdout for capture.
+
+    The preamble already imports: pandas as pd, numpy as np, matplotlib, plt.
+    ARTIFACTS_DIR is pre-defined — save charts like:
+        plt.savefig(f'{ARTIFACTS_DIR}/revenue_trend.png', dpi=150, bbox_inches='tight')
+    Print computed metrics to stdout for capture.
     """
     return execute_python(code)
 

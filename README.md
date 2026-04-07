@@ -1,6 +1,11 @@
-# IEOR 4576 — Project 2: Multi-Agent Data Analyst
+# IEOR 4576 — Project 2: Multi-Agent Sector Analyst
 
-A multi-agent system that automates the first three steps of a data analysis lifecycle: **Collect → Explore → Hypothesize**. The user asks an analytics question in natural language; the system retrieves real-world data, performs exploratory data analysis, and returns a grounded hypothesis with supporting evidence.
+A multi-agent system that performs the first three steps of a data analyst workflow — **Collect → Explore → Hypothesize** — applied to public company SEC filings. The user asks a sector or company question in natural language; the system retrieves real financial data from EDGAR, performs exploratory analysis, and returns a grounded analyst memo with evidence and charts.
+
+Example questions:
+- *"Analyze the semiconductor sector — compare NVDA, AMD, and INTC on revenue growth and margins"*
+- *"How has Apple's profitability trended over the last 5 years?"*
+- *"Which cloud hyperscaler is growing fastest based on recent filings?"*
 
 ---
 
@@ -10,84 +15,83 @@ A multi-agent system that automates the first three steps of a data analysis lif
 
 ---
 
-## Project Overview
+## Architecture
 
-The system is built as a pipeline of four specialized agents orchestrated by a central planner. Each agent has a distinct system prompt and responsibility:
+```
+User question
+      │
+      ▼
+┌──────────────────┐
+│   Orchestrator   │  Plans pipeline, routes handoffs, iterates if data gaps found
+└────────┬─────────┘
+         │ handoff
+    ┌────┴──────────────────────────┐
+    ▼                               ▼
+┌──────────┐                 (loops back if EDA
+│ Collector│                  finds data gaps)
+│  Agent   │
+└────┬─────┘
+     │ DataBundle
+     ▼
+┌──────────┐
+│   EDA    │  Stats + code execution + charts (fan-out across tools)
+│  Agent   │
+└────┬─────┘
+     │ EDAFindings
+     ▼
+┌──────────────┐
+│  Hypothesis  │  Analyst memo + evidence + saved artifacts
+│    Agent     │
+└──────────────┘
+```
 
-| Agent | Role |
-|---|---|
-| **Orchestrator** | Receives the user's question, plans the analysis, hands off to specialist agents in sequence (or parallel) |
-| **Collector** | Retrieves real-world data at runtime via external API calls and/or SQL queries against a local dataset |
-| **EDA Agent** | Performs exploratory data analysis: computes statistics, filters/groups data, writes and executes Python code for deeper analysis |
-| **Hypothesis Agent** | Synthesizes EDA findings into a grounded hypothesis with cited evidence, data tables, and visualizations |
+**Multi-agent pattern:** Orchestrator-handoff with iterative refinement loop.
+The Orchestrator can loop Collect → EDA → Collect again if the EDA agent surfaces data gaps.
 
 ---
 
 ## The Three Steps
 
-### Step 1: Collect (`agents/collector.py`)
+### Step 1: Collect (`agents/collector.py`, `tools/sec_edgar.py`)
 
-The Collector agent retrieves data from **two distinct external sources** at runtime:
+The Collector agent retrieves real financial data from **two distinct sources** at runtime. No data is hard-coded.
 
-1. **Public REST API** — The agent calls a public data API (e.g., FRED, Open-Meteo, NYC Open Data, or a sports stats API) based on the user's question. The endpoint and query parameters are constructed dynamically; no data is hard-coded.
-2. **SQL via DuckDB** — For structured/tabular datasets (CSV, Parquet), the agent dynamically writes and executes SQL queries using DuckDB. The dataset is large enough that it cannot be trivially dumped into context.
+**Retrieval Method 1 — SEC EDGAR XBRL API (structured financial data)**
+- The agent resolves company tickers to SEC CIK numbers using the EDGAR company tickers index
+- It calls `https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json` per company
+- This endpoint returns the company's full financial fact history (hundreds of KB of JSON — too large for context)
+- The agent queries specific concepts: `revenue`, `net_income`, `operating_income`, `gross_profit`, `rd_expense`, etc.
+- Annual (10-K) and quarterly (10-Q) data are filtered and deduplicated before returning
 
-The Collector agent uses **structured output** (Pydantic schema) to return a normalized `DataBundle` that downstream agents consume.
+**Retrieval Method 2 — Filing text scraping (MD&A extraction)**
+- For qualitative signals, the agent scrapes the actual filing document from EDGAR Archives
+- It extracts the Management Discussion & Analysis (MD&A) section using regex heuristics
+- This captures forward-looking statements, segment commentary, and risk factors that complement the structured data
+
+The Collector returns a structured `DataBundle` (Pydantic schema) passed to downstream agents.
 
 ### Step 2: Explore and Analyze (`agents/eda_agent.py`)
 
-The EDA agent performs exploratory analysis using a set of tools. It does not summarize raw data — it computes specific metrics and surfaces findings that inform the hypothesis.
+The EDA agent uses three tools to surface specific findings:
 
-EDA tools available:
-- `compute_statistics` — means, medians, standard deviations, correlations, growth rates
-- `group_and_filter` — segments data by category, time window, or threshold
-- `execute_python_code` — the agent writes pandas/numpy/scipy/matplotlib code and runs it in a sandboxed subprocess; output and generated figures are captured
-- `text_analysis` — keyword/entity frequency and basic NLP operations on text fields
+1. **`stats_tool`** (`tools/statistics.py`) — computes means, medians, standard deviations, correlations, and growth rates over the financial records
+2. **`filter_group_tool`** (`tools/statistics.py`) — segments data by company, year, or threshold (e.g., "companies with operating margin > 30%")
+3. **`run_python`** (`tools/code_executor.py`) — the agent writes pandas/matplotlib code at runtime and executes it in a sandboxed subprocess. Used for:
+   - Computing YoY revenue growth rates and CAGRs
+   - Computing operating margin % over time
+   - Generating multi-company trend charts and sector comparison bar charts
+   - Charts are saved to `artifacts/` and served to the frontend
 
-The EDA agent can **fan out** to run multiple analysis tools in parallel and aggregates results before handing off to the Hypothesis agent.
+The EDA agent returns structured `EDAFindings` with a `key_insight` (specific pattern found) and `recommended_hypothesis_direction`.
 
 ### Step 3: Hypothesize (`agents/hypothesis_agent.py`)
 
-The Hypothesis agent receives EDA findings and produces a deliverable that includes:
-- A natural-language summary grounded in specific data points (numbers, percentages, time ranges)
-- A structured evidence block citing which data points support the claim
-- One or more data visualizations (matplotlib/plotly charts saved as PNG artifacts and served to the frontend)
-- A markdown report written to disk as a persistent artifact
+The Hypothesis agent synthesizes EDA findings into a grounded analyst memo:
 
-The hypothesis is derived from runtime data, not model weights. All claims are traceable to specific EDA outputs.
-
----
-
-## Architecture
-
-```
-User Question
-      │
-      ▼
-┌─────────────────┐
-│   Orchestrator  │  Plans steps, manages state, handles iteration
-│   Agent         │  OpenAI Agents SDK handoff pattern
-└────────┬────────┘
-         │ handoff
-    ┌────┴────┐
-    ▼         ▼
-┌────────┐  ┌────────┐  (parallel fan-out possible)
-│Collector│  │  EDA   │
-│ Agent   │  │ Agent  │
-└────┬────┘  └────┬───┘
-     │             │
-     └──────┬──────┘
-            ▼
-    ┌───────────────┐
-    │  Hypothesis   │
-    │    Agent      │
-    └───────┬───────┘
-            ▼
-    ┌───────────────┐
-    │   FastAPI     │  Streams results back to frontend
-    │   Backend     │
-    └───────────────┘
-```
+- **Hypothesis**: 1–2 sentence main claim derived from EDA data points (not model weights)
+- **Evidence**: structured list of `EvidencePoint` objects — each cites a specific number, percentage, or comparison and the source tool it came from
+- **Narrative**: full analyst memo structured as: Executive Summary → Key Findings → Hypothesis & Reasoning → Risks → Conclusion
+- **Artifacts**: the memo is saved to `artifacts/` as a markdown file; charts generated by EDA are linked
 
 ---
 
@@ -97,23 +101,21 @@ User Question
 
 | Requirement | Implementation |
 |---|---|
-| **Frontend** | `frontend/index.html` — chat UI with streaming response display and artifact panel |
-| **Agent Framework** | OpenAI Agents SDK (`agents/` directory) — orchestrator-handoff pattern |
-| **Tool Calling** | `tools/` directory — `compute_statistics`, `execute_python_code`, `group_and_filter`, API fetch tools |
-| **Non-trivial Dataset** | Runtime API + DuckDB-queried dataset (100k+ rows); described in Step 1 above |
-| **Multi-agent Pattern** | Orchestrator → Collector → EDA (fan-out) → Hypothesis (handoff chain + parallel sub-tasks) |
+| **Frontend** | `frontend/index.html` — dark chat UI with hypothesis, evidence, narrative, and artifact panel |
+| **Agent Framework** | **OpenAI Agents SDK** — `Agent`, `Runner`, `handoff()`, `function_tool` across all four agents |
+| **Tool Calling** | 7 tools: `lookup_ticker`, `fetch_company_financials`, `fetch_sector_financials`, `fetch_filing_text`, `stats_tool`, `filter_group_tool`, `run_python` |
+| **Non-trivial Dataset** | SEC EDGAR XBRL facts JSON (~100s KB per company, full financial history since IPO) — too large for context, filtered at runtime |
+| **Multi-agent Pattern** | Orchestrator → Collector → EDA → Hypothesis handoff chain; Orchestrator can loop Collect → EDA → Collect for iterative refinement |
 | **Deployed** | Google Cloud Run via `cloudbuild.yaml` |
 | **README** | This file |
 
-### Grab Bag
+### Grab Bag (3 of 7 → 7.5 pts)
 
-| Concept | Points | Implementation |
-|---|---|---|
-| **Code Execution** | 2.5 pts | `tools/code_executor.py` — agent writes Python (pandas, matplotlib) and executes it in a sandboxed subprocess at runtime |
-| **Data Visualization** | 2.5 pts | `tools/visualizer.py` + `artifacts/` — matplotlib charts are generated by the code executor, saved as PNG, and served to the frontend via a static file endpoint |
-| **Structured Output** | 2.5 pts | `models/schemas.py` — Pydantic schemas for `DataBundle`, `EDAFindings`, `HypothesisReport`; used at agent handoff boundaries to ensure reliable data flow |
-
-*(Targeting 3 grab-bag concepts for full coverage + buffer)*
+| Concept | Implementation |
+|---|---|
+| **Code Execution** (2.5 pts) | `tools/code_executor.py` — EDA agent writes pandas/numpy/matplotlib code at runtime and executes it in a sandboxed `subprocess` with a 30s timeout. Code + output captured and returned to agent. |
+| **Data Visualization** (2.5 pts) | Charts (revenue trends, margin comparisons, sector scatter plots) generated by `run_python`, saved as PNG to `artifacts/`, served at `/artifacts/{name}` and displayed in frontend artifact panel |
+| **Structured Output** (2.5 pts) | `models/schemas.py` — Pydantic schemas `DataBundle`, `EDAFindings`, `HypothesisReport`, `EvidencePoint` enforce reliable data flow at every agent handoff boundary |
 
 ---
 
@@ -123,12 +125,13 @@ User Question
 |---|---|
 | Language | Python 3.12+ |
 | Package manager | `uv` |
-| Agent framework | OpenAI Agents SDK |
+| Agent framework | OpenAI Agents SDK (`openai-agents`) |
 | LLM | Gemini 2.5 Flash via LiteLLM → Google Vertex AI |
 | Backend | FastAPI + uvicorn |
-| Data querying | DuckDB (SQL over CSV/Parquet) |
-| Code sandbox | Python `subprocess` with timeout |
-| Visualization | matplotlib / plotly |
+| Data source 1 | SEC EDGAR XBRL API (public, no key required) |
+| Data source 2 | SEC EDGAR filing text scraping (httpx) |
+| Code sandbox | Python `subprocess` with 30s timeout |
+| Visualization | matplotlib (saved to disk, served as static files) |
 | Deployment | Google Cloud Run |
 | Container | Docker (python:3.12-slim) |
 
@@ -138,32 +141,30 @@ User Question
 
 ```
 ieor4576-project2/
-├── app.py                    # FastAPI entrypoint; chat, health, artifact endpoints
-├── pyproject.toml            # uv-managed dependencies
-├── Dockerfile
-├── cloudbuild.yaml
+├── app.py                      # FastAPI: /analyze endpoint, /artifacts static serving
+├── pyproject.toml / uv.lock    # uv-managed dependencies
+├── Dockerfile / cloudbuild.yaml
 ├── .env.example
 │
 ├── agents/
-│   ├── orchestrator.py       # Orchestrator: plans, routes, iterates
-│   ├── collector.py          # Collector: API calls + DuckDB SQL queries
-│   ├── eda_agent.py          # EDA: statistical tools + code execution fan-out
-│   └── hypothesis_agent.py   # Hypothesis: synthesizes findings → report + charts
+│   ├── orchestrator.py         # Orchestrator: plans, routes, iterates (handoff pattern)
+│   ├── collector.py            # Collector: EDGAR XBRL API + filing text scraper
+│   ├── eda_agent.py            # EDA: stats tools + sandboxed code execution + charts
+│   └── hypothesis_agent.py    # Hypothesis: analyst memo + evidence + artifacts
 │
 ├── tools/
-│   ├── api_client.py         # External API integration (dynamic endpoint construction)
-│   ├── sql_query.py          # DuckDB tool: write + execute SQL at runtime
-│   ├── code_executor.py      # Sandboxed Python execution (pandas, matplotlib)
-│   ├── statistics.py         # compute_statistics, group_and_filter tools
-│   └── visualizer.py        # Chart generation helpers
+│   ├── sec_edgar.py            # SEC EDGAR: ticker lookup, XBRL financials, MD&A scraper
+│   ├── statistics.py           # compute_statistics, group_and_filter
+│   ├── code_executor.py        # Sandboxed subprocess Python execution
+│   └── api_client.py           # Generic REST API helper
 │
 ├── models/
-│   └── schemas.py            # Pydantic schemas: DataBundle, EDAFindings, HypothesisReport
+│   └── schemas.py              # Pydantic schemas: DataBundle, EDAFindings, HypothesisReport
 │
 ├── frontend/
-│   └── index.html            # Chat UI with artifact viewer panel
+│   └── index.html              # Chat UI with hypothesis, evidence, narrative, artifact panel
 │
-└── artifacts/                # Runtime-generated outputs: PNGs, CSVs, markdown reports
+└── artifacts/                  # Runtime-generated: PNG charts, markdown reports
 ```
 
 ---
@@ -171,17 +172,17 @@ ieor4576-project2/
 ## Running Locally
 
 ```bash
-# 1. Clone and enter repo
+# 1. Clone repo
 git clone https://github.com/ajg2314/ieor4576-project2
 cd ieor4576-project2
 
-# 2. Copy env and fill in credentials
+# 2. Copy env and fill in GCP credentials
 cp .env.example .env
 
-# 3. Install dependencies with uv
+# 3. Install dependencies
 uv sync
 
-# 4. Run the server
+# 4. Run
 uv run uvicorn app:app --reload --port 8080
 
 # 5. Open http://localhost:8080
@@ -194,24 +195,18 @@ uv run uvicorn app:app --reload --port 8080
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID |
 | `GOOGLE_CLOUD_LOCATION` | Vertex AI region (e.g. `us-central1`) |
 | `GEMINI_MODEL` | Model name (e.g. `gemini-2.5-flash`) |
-| `DATA_API_KEY` | API key for the external data source |
+
+No external API keys required — SEC EDGAR is a free public API.
 
 ---
 
 ## Deployment
 
 ```bash
-# Trigger Cloud Build (builds Docker image, pushes to GCR, deploys to Cloud Run)
 gcloud builds submit --config cloudbuild.yaml
 ```
 
-The `cloudbuild.yaml` mirrors project 1: build → push to GCR → deploy to Cloud Run with public access.
-
----
-
-## Topic
-
-> **TBD** — The agent system is topic-agnostic. The data source (API endpoint and/or dataset file) will be configured via environment variables and the Collector agent's prompt. Swapping topics requires changing the API target and dataset, not the agent architecture.
+Builds Docker image → pushes to GCR → deploys to Cloud Run with public access.
 
 ---
 
