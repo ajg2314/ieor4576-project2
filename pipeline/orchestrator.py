@@ -84,6 +84,56 @@ def _parse_agent_output(result: RunResult, model_class: Type[T]) -> T:
         )
 
 
+async def _run_agent(agent, input, model_class: Type[T]) -> T:
+    """Run an agent and parse its output, with an automatic nudge if output is empty.
+
+    Gemini via LiteLLM sometimes stops after tool calls without emitting a final
+    text message. When that happens we continue the conversation with an explicit
+    request for the JSON output.
+    """
+    result = await Runner.run(agent, input=input)
+    raw = _extract_text(result)
+
+    if not raw.strip():
+        logger.warning(
+            "%s produced no text output — sending follow-up nudge for JSON",
+            agent.name,
+        )
+        nudge = (
+            f"You have finished your tool calls. Now output your final response.\n"
+            f"Output ONLY the JSON object as specified in your instructions. "
+            f"No other text, no markdown fences."
+        )
+        continued = result.to_input_list() + [{"role": "user", "content": nudge}]
+        result = await Runner.run(agent, input=continued)
+        raw = _extract_text(result)
+
+    return _parse_text(raw, model_class)
+
+
+def _parse_text(raw: str, model_class: Type[T]) -> T:
+    """Parse a raw string into a Pydantic model."""
+    if not raw.strip():
+        raise ValueError(
+            f"Agent produced no text output for {model_class.__name__} even after nudge."
+        )
+    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
+    raw = re.sub(r"\s*```$", "", raw.strip(), flags=re.MULTILINE)
+    try:
+        return model_class.model_validate_json(raw)
+    except Exception:
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            try:
+                return model_class.model_validate_json(match.group())
+            except Exception:
+                pass
+        raise ValueError(
+            f"Could not parse agent output as {model_class.__name__}.\n"
+            f"Raw output (first 800 chars):\n{raw[:800]}"
+        )
+
+
 def _needs_refinement(findings: EDAFindings) -> bool:
     gap_keywords = ["missing", "insufficient", "need more", "additional data", "no data"]
     return any(kw in findings.recommended_hypothesis_direction.lower() for kw in gap_keywords)
@@ -116,8 +166,7 @@ async def run_analysis_with_status(
     # ── Step 1: Collect ──────────────────────────────────────────────────
     yield "status", "Step 1/3 — Collecting data from SEC EDGAR..."
 
-    collect_result = await Runner.run(collector, input=full_question)
-    data_bundle = _parse_agent_output(collect_result, DataBundle)
+    data_bundle = await _run_agent(collector, full_question, DataBundle)
 
     yield "status", f"Data collected: {data_bundle.summary[:120]}..."
 
@@ -132,8 +181,7 @@ async def run_analysis_with_status(
             f"User question: {question}\n\n"
             f"Collected data:\n{data_bundle.model_dump_json(indent=2)}"
         )
-        eda_result = await Runner.run(eda_agent, input=eda_input)
-        eda_findings = _parse_agent_output(eda_result, EDAFindings)
+        eda_findings = await _run_agent(eda_agent, eda_input, EDAFindings)
 
         yield "status", f"Key insight: {eda_findings.key_insight[:120]}..."
 
@@ -145,8 +193,7 @@ async def run_analysis_with_status(
                 f"EDA found gaps: {eda_findings.recommended_hypothesis_direction}\n"
                 "Please collect additional data to fill these gaps."
             )
-            collect_result = await Runner.run(collector, input=refinement_prompt)
-            additional = _parse_agent_output(collect_result, DataBundle)
+            additional = await _run_agent(collector, refinement_prompt, DataBundle)
             data_bundle = DataBundle(
                 source=f"{data_bundle.source} + {additional.source}",
                 retrieval_method=data_bundle.retrieval_method,
@@ -166,8 +213,7 @@ async def run_analysis_with_status(
         f"EDA findings:\n{eda_findings.model_dump_json(indent=2)}\n\n"
         f"Raw data summary: {data_bundle.summary}"
     )
-    hypothesis_result = await Runner.run(hypothesis_agent, input=hypothesis_input)
-    report = _parse_agent_output(hypothesis_result, HypothesisReport)
+    report = await _run_agent(hypothesis_agent, hypothesis_input, HypothesisReport)
 
     yield "status", "Done — report ready."
     yield "result", {

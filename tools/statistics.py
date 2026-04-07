@@ -65,8 +65,9 @@ def _stats_for_df(df: pd.DataFrame, numeric_columns: list[str]) -> dict[str, Any
             first, last = float(series.iloc[0]), float(series.iloc[-1])
             if first != 0:
                 entry["growth_rate_pct"] = round((last - first) / abs(first) * 100, 2)
-        # Correlation with other numeric columns
-        numeric_df = df[numeric_columns].apply(pd.to_numeric, errors="coerce")
+        # Correlation with other numeric columns (only columns that exist in df)
+        existing_cols = [c for c in numeric_columns if c in df.columns]
+        numeric_df = df[existing_cols].apply(pd.to_numeric, errors="coerce")
         corr = numeric_df.corr()
         if col in corr.columns:
             entry["correlations"] = {
