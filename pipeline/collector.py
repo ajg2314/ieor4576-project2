@@ -11,7 +11,7 @@ Step 1: Collect. Two retrieval methods:
 from __future__ import annotations
 
 import os
-from agents import Agent, function_tool
+from agents import Agent, AgentOutputSchema, function_tool
 from agents.extensions.models.litellm_model import LitellmModel
 
 from tools.sec_edgar import (
@@ -105,5 +105,5 @@ def build_collector_agent() -> Agent:
         model=_make_model(),
         instructions=COLLECTOR_PROMPT,
         tools=[lookup_ticker, fetch_company_financials, fetch_sector_financials, fetch_filing_text],
-        output_type=DataBundle,
+        output_type=AgentOutputSchema(DataBundle, strict_json_schema=False),
     )

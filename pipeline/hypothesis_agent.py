@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import uuid
 from pathlib import Path
-from agents import Agent, function_tool
+from agents import Agent, AgentOutputSchema, function_tool
 from agents.extensions.models.litellm_model import LitellmModel
 
 from tools.code_executor import execute_python
@@ -93,5 +93,5 @@ def build_hypothesis_agent() -> Agent:
         model=_make_model(),
         instructions=HYPOTHESIS_PROMPT,
         tools=[save_report, run_python],
-        output_type=HypothesisReport,
+        output_type=AgentOutputSchema(HypothesisReport, strict_json_schema=False),
     )

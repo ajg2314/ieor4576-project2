@@ -13,7 +13,7 @@ Grab bag: Code Execution, Data Visualization
 from __future__ import annotations
 
 import os
-from agents import Agent, function_tool
+from agents import Agent, AgentOutputSchema, function_tool
 from agents.extensions.models.litellm_model import LitellmModel
 
 from tools.statistics import compute_statistics, group_and_filter
@@ -116,5 +116,5 @@ def build_eda_agent() -> Agent:
         model=_make_model(),
         instructions=EDA_PROMPT,
         tools=[stats_tool, filter_group_tool, run_python],
-        output_type=EDAFindings,
+        output_type=AgentOutputSchema(EDAFindings, strict_json_schema=False),
     )
