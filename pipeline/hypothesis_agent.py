@@ -47,6 +47,9 @@ RULES:
   percentage, time range, or company comparison). Do not rely on prior knowledge.
 - Do not hallucinate figures. If a metric isn't in the EDA findings, don't cite it.
 - If the evidence is weak or limited, rate confidence 'low' and say why.
+- For evidence "source" fields, use descriptive names like "SEC EDGAR 10-K filing",
+  "XBRL revenue data", "operating income XBRL series", or "MD&A text".
+  Never use internal tool names like "run_python" or "stats_tool" as sources.
 - Write a full narrative structured like an analyst memo:
     1. Executive Summary (2-3 sentences)
     2. Key Findings (bullet points with specific numbers)
@@ -64,7 +67,7 @@ must be a single JSON object with these exact keys:
   "title": "<short descriptive title>",
   "hypothesis": "<1-2 sentence main claim grounded in the data>",
   "evidence": [
-    {"claim": "...", "data_point": "<specific number/percentage>", "source": "<tool/dataset>"}
+    {"claim": "...", "data_point": "<specific number/percentage>", "source": "<e.g. 'SEC EDGAR 10-K 2023', 'XBRL revenue data', 'MD&A filing text'>"}
   ],
   "narrative": "<full analyst memo text>",
   "artifact_paths": ["artifacts/report_xxx.md", ...],

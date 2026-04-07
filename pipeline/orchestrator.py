@@ -12,7 +12,8 @@ import logging
 import re
 from typing import AsyncGenerator, TypeVar, Type
 
-from agents import Runner, RunResult
+from agents import Runner, RunResult, ItemHelpers
+from agents.items import MessageOutputItem
 from pydantic import BaseModel
 
 from .collector import build_collector_agent
@@ -30,31 +31,21 @@ def _extract_text(result: RunResult) -> str:
     """Extract the last non-empty assistant text from a RunResult.
 
     Gemini via LiteLLM sometimes produces an empty final_output after a long
-    tool-call chain. This walks the full message history as a fallback.
+    tool-call chain. Falls back to scanning new_items via SDK helpers.
     """
+    # 1. Try final_output first
     raw = result.final_output
     if raw and str(raw).strip():
         return str(raw)
 
-    # Walk new_messages in reverse looking for the last assistant text
-    for msg in reversed(result.new_messages):
-        # Messages can be dicts or objects depending on SDK version
-        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
-        if role != "assistant":
-            continue
-        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
-        if isinstance(content, str) and content.strip():
-            return content
-        if isinstance(content, list):
-            for block in reversed(content):
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text = block.get("text", "")
-                    if text.strip():
-                        return text
-                elif hasattr(block, "text") and getattr(block, "text", "").strip():
-                    return block.text
+    # 2. Collect all MessageOutputItem text in reverse, return last non-empty
+    for item in reversed(result.new_items):
+        if isinstance(item, MessageOutputItem):
+            text = ItemHelpers.text_message_output(item)
+            if text.strip():
+                return text
 
-    logger.warning("No non-empty assistant text found in RunResult messages")
+    logger.warning("No non-empty assistant text found in RunResult.new_items")
     return ""
 
 
