@@ -57,6 +57,7 @@ def _needs_refinement(findings: EDAFindings) -> bool:
 
 async def run_analysis_with_status(
     question: str,
+    prior_context: str | None = None,
 ) -> AsyncGenerator[tuple[str, object], None]:
     """
     Run the full pipeline, yielding (event_type, payload) tuples as progress is made.
@@ -70,10 +71,18 @@ async def run_analysis_with_status(
     eda_agent = build_eda_agent()
     hypothesis_agent = build_hypothesis_agent()
 
+    # Prepend prior conversation context for follow-up questions
+    full_question = question
+    if prior_context:
+        full_question = (
+            f"Prior analysis context:\n{prior_context}\n\n"
+            f"Follow-up question: {question}"
+        )
+
     # ── Step 1: Collect ──────────────────────────────────────────────────
     yield "status", "Step 1/3 — Collecting data from SEC EDGAR..."
 
-    collect_result = await Runner.run(collector, input=question)
+    collect_result = await Runner.run(collector, input=full_question)
     data_bundle = _parse_agent_output(collect_result.final_output, DataBundle)
 
     yield "status", f"Data collected: {data_bundle.summary[:120]}..."

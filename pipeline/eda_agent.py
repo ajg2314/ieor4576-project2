@@ -45,14 +45,15 @@ TOOLS AVAILABLE:
    Use to compare groups (e.g., "which companies have margin > 30%?")
 
 3. `run_python` — write and execute pandas/matplotlib code at runtime.
-   This is your most powerful tool for financial analysis. Use it for:
-   - Computing YoY revenue growth rates: (current - prior) / prior * 100
-   - Computing operating margins: operating_income / revenue * 100
-   - Plotting multi-company revenue trends (line chart, one series per company)
-   - Plotting sector margin comparison (bar chart)
-   - Computing CAGR over the full available period
-   Save all charts with: plt.savefig(f'{ARTIFACTS_DIR}/chart_name.png', dpi=150, bbox_inches='tight')
-   Print computed metrics to stdout.
+   You MUST call this at least twice to generate charts. Required charts:
+   a) Revenue trend chart — line chart with one series per company, x=year, y=revenue in billions.
+      Use a dark background (plt.style.use('dark_background')), distinct colors per company,
+      clear labels, gridlines, and a legend. Title: "Revenue Trend".
+   b) Margin comparison chart — grouped bar chart of operating margin % per company per year,
+      OR a line chart of margin over time. Title: "Operating Margin %".
+   Additional charts are encouraged (R&D spend, growth rates, etc.)
+   Save every chart: plt.savefig(f'{ARTIFACTS_DIR}/chart_name.png', dpi=150, bbox_inches='tight')
+   plt.close() after each save. Print computed values to stdout.
 
 FINANCIAL ANALYSIS CHECKLIST:
 - Revenue: absolute levels, YoY growth %, CAGR

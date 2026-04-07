@@ -41,6 +41,7 @@ app.mount("/files", StaticFiles(directory=str(ARTIFACTS_DIR)), name="files")
 
 class AnalysisRequest(BaseModel):
     question: str
+    prior_context: str | None = None
 
 
 @app.get("/health")
@@ -73,7 +74,7 @@ async def analyze_stream(req: AnalysisRequest) -> StreamingResponse:
 
     async def event_stream():
         try:
-            async for event_type, payload in run_analysis_with_status(req.question):
+            async for event_type, payload in run_analysis_with_status(req.question, req.prior_context):
                 data = json.dumps({"type": event_type, "payload": payload})
                 yield f"data: {data}\n\n"
                 await asyncio.sleep(0)  # let the event loop flush
