@@ -8,6 +8,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
+import agents
+agents.set_tracing_disabled(True)
+
 # LiteLLM reads these env vars for Vertex AI authentication
 os.environ.setdefault("VERTEXAI_PROJECT", os.environ.get("GOOGLE_CLOUD_PROJECT", ""))
 os.environ.setdefault("VERTEXAI_LOCATION", os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"))
