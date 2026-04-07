@@ -69,7 +69,8 @@ OUTPUT FORMAT: Your final response must be a single JSON object with these exact
   "metadata": {"time_range": "...", "companies": [...], ...},
   "summary": "<short description of what was retrieved and why>"
 }
-Output ONLY the JSON object, no other text.
+IMPORTANT: After all tool calls are complete, you MUST send one final text message
+containing ONLY the JSON object above. Do not stop after the last tool call.
 """
 
 

@@ -78,7 +78,8 @@ OUTPUT FORMAT: Your final response must be a single JSON object with these exact
   "key_insight": "<the single most important pattern found, with specific numbers>",
   "recommended_hypothesis_direction": "<what the hypothesis agent should focus on>"
 }
-Output ONLY the JSON object, no other text.
+IMPORTANT: After all tool calls are complete, you MUST send one final text message
+containing ONLY the JSON object above. Do not stop after the last tool call.
 """
 
 

@@ -70,7 +70,8 @@ must be a single JSON object with these exact keys:
   "artifact_paths": ["artifacts/report_xxx.md", ...],
   "confidence": "<high|medium|low>"
 }
-Output ONLY the JSON object, no other text.
+IMPORTANT: After all tool calls are complete, you MUST send one final text message
+containing ONLY the JSON object above. Do not stop after the last tool call.
 """
 
 
