@@ -22,14 +22,7 @@ LITELLM_MODEL_ID = f"vertex_ai/{GEMINI_MODEL}"
 
 
 def _make_model() -> LitellmModel:
-    return LitellmModel(
-        model=LITELLM_MODEL_ID,
-        api_base=None,
-        extra_kwargs={
-            "vertex_project": VERTEX_PROJECT,
-            "vertex_location": VERTEX_LOCATION,
-        },
-    )
+    return LitellmModel(model=LITELLM_MODEL_ID)
 
 
 ORCHESTRATOR_PROMPT = """\

@@ -29,10 +29,6 @@ ARTIFACTS_DIR = Path(__file__).parent.parent / "artifacts"
 def _make_model() -> LitellmModel:
     return LitellmModel(
         model=LITELLM_MODEL_ID,
-        extra_kwargs={
-            "vertex_project": os.environ.get("GOOGLE_CLOUD_PROJECT", ""),
-            "vertex_location": os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
-        },
     )
 
 

@@ -27,13 +27,7 @@ LITELLM_MODEL_ID = f"vertex_ai/{os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash
 
 
 def _make_model() -> LitellmModel:
-    return LitellmModel(
-        model=LITELLM_MODEL_ID,
-        extra_kwargs={
-            "vertex_project": os.environ.get("GOOGLE_CLOUD_PROJECT", ""),
-            "vertex_location": os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"),
-        },
-    )
+    return LitellmModel(model=LITELLM_MODEL_ID)
 
 
 COLLECTOR_PROMPT = """\

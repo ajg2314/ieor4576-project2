@@ -8,6 +8,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
+# LiteLLM reads these env vars for Vertex AI authentication
+os.environ.setdefault("VERTEXAI_PROJECT", os.environ.get("GOOGLE_CLOUD_PROJECT", ""))
+os.environ.setdefault("VERTEXAI_LOCATION", os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1"))
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
