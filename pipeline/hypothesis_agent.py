@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import uuid
 from pathlib import Path
-from agents import Agent, AgentOutputSchema, function_tool
+from agents import Agent, function_tool
 from agents.extensions.models.litellm_model import LitellmModel
 
 from tools.code_executor import execute_python
@@ -58,13 +58,19 @@ TOOLS:
 - save_report: persist a markdown memo to disk (always call this)
 - run_python: generate a final summary chart if needed
 
-OUTPUT — HypothesisReport:
-- title: e.g. "Semiconductor Sector: Margin Divergence 2020–2024"
-- hypothesis: 1-2 sentence main claim grounded in the data
-- evidence: list of EvidencePoints (claim, data_point, source)
-- narrative: full analyst memo
-- artifact_paths: all saved files (report + any charts)
-- confidence: 'high', 'medium', or 'low'
+OUTPUT FORMAT: After calling save_report and any visualizations, your final response
+must be a single JSON object with these exact keys:
+{
+  "title": "<short descriptive title>",
+  "hypothesis": "<1-2 sentence main claim grounded in the data>",
+  "evidence": [
+    {"claim": "...", "data_point": "<specific number/percentage>", "source": "<tool/dataset>"}
+  ],
+  "narrative": "<full analyst memo text>",
+  "artifact_paths": ["artifacts/report_xxx.md", ...],
+  "confidence": "<high|medium|low>"
+}
+Output ONLY the JSON object, no other text.
 """
 
 
@@ -93,5 +99,4 @@ def build_hypothesis_agent() -> Agent:
         model=_make_model(),
         instructions=HYPOTHESIS_PROMPT,
         tools=[save_report, run_python],
-        output_type=AgentOutputSchema(HypothesisReport, strict_json_schema=False),
     )

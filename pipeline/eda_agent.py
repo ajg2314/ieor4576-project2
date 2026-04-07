@@ -13,7 +13,7 @@ Grab bag: Code Execution, Data Visualization
 from __future__ import annotations
 
 import os
-from agents import Agent, AgentOutputSchema, function_tool
+from agents import Agent, function_tool
 from agents.extensions.models.litellm_model import LitellmModel
 
 from tools.statistics import compute_statistics, group_and_filter
@@ -68,6 +68,16 @@ Return EDAFindings with:
 - `key_insight`: the single most important pattern (e.g. "NVDA operating margin expanded
   from 20% to 55% over 4 years, far outpacing AMD at 8% and INTC at -4%")
 - `recommended_hypothesis_direction`: what the Hypothesis agent should focus on
+
+OUTPUT FORMAT: Your final response must be a single JSON object with these exact keys:
+{
+  "findings": [
+    {"tool_name": "...", "description": "...", "value": ..., "artifact_path": null}
+  ],
+  "key_insight": "<the single most important pattern found, with specific numbers>",
+  "recommended_hypothesis_direction": "<what the hypothesis agent should focus on>"
+}
+Output ONLY the JSON object, no other text.
 """
 
 
@@ -116,5 +126,4 @@ def build_eda_agent() -> Agent:
         model=_make_model(),
         instructions=EDA_PROMPT,
         tools=[stats_tool, filter_group_tool, run_python],
-        output_type=AgentOutputSchema(EDAFindings, strict_json_schema=False),
     )

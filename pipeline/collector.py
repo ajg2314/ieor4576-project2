@@ -11,7 +11,7 @@ Step 1: Collect. Two retrieval methods:
 from __future__ import annotations
 
 import os
-from agents import Agent, AgentOutputSchema, function_tool
+from agents import Agent, function_tool
 from agents.extensions.models.litellm_model import LitellmModel
 
 from tools.sec_edgar import (
@@ -60,6 +60,16 @@ PROCESS:
 
 The DataBundle's `records` field should be a flat list of financial data points
 suitable for the EDA agent to analyze.
+
+OUTPUT FORMAT: Your final response must be a single JSON object with these exact keys:
+{
+  "source": "<name/URL of primary data source>",
+  "retrieval_method": "<api|sql|web|rag>",
+  "records": [{"ticker": "...", "period": "...", "metric": "...", "value": ...}, ...],
+  "metadata": {"time_range": "...", "companies": [...], ...},
+  "summary": "<short description of what was retrieved and why>"
+}
+Output ONLY the JSON object, no other text.
 """
 
 
@@ -105,5 +115,4 @@ def build_collector_agent() -> Agent:
         model=_make_model(),
         instructions=COLLECTOR_PROMPT,
         tools=[lookup_ticker, fetch_company_financials, fetch_sector_financials, fetch_filing_text],
-        output_type=AgentOutputSchema(DataBundle, strict_json_schema=False),
     )

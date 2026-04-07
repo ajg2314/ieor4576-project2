@@ -296,8 +296,9 @@
         });
 
         if (!res.ok) {
-          const err = await res.json();
-          throw new Error(err.detail || 'Analysis failed');
+          let msg = 'Analysis failed';
+          try { msg = (await res.json()).detail || msg; } catch { msg = await res.text(); }
+          throw new Error(msg);
         }
 
         const data = await res.json();

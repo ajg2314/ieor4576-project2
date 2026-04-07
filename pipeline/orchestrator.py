@@ -1,86 +1,122 @@
-"""Orchestrator Agent — plans the analysis and hands off to specialist agents.
+"""Orchestrator — coordinates the three-agent pipeline.
 
-Multi-agent pattern: Orchestrator-handoff. The orchestrator decides whether to
-collect more data, re-run EDA, or finalize the hypothesis.
+Multi-agent pattern: sequential pipeline coordinator.
+The orchestrator runs three specialized agents in order, piping structured
+outputs between them. It can loop (Collect → EDA → Collect) if the EDA agent
+surfaces data gaps, up to a fixed retry limit.
+
+Each agent has its own system prompt and responsibilities:
+  Collector    → DataBundle
+  EDA Agent    → EDAFindings
+  Hypothesis   → HypothesisReport
 """
 
 from __future__ import annotations
 
+import json
 import os
-from agents import Agent, Runner, handoff
-from agents.extensions.models.litellm_model import LitellmModel
+import re
+from typing import TypeVar, Type
+
+from agents import Runner
+from pydantic import BaseModel
 
 from .collector import build_collector_agent
 from .eda_agent import build_eda_agent
 from .hypothesis_agent import build_hypothesis_agent
+from models.schemas import DataBundle, EDAFindings, HypothesisReport
 
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-VERTEX_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
-VERTEX_LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "us-central1")
-
-LITELLM_MODEL_ID = f"vertex_ai/{GEMINI_MODEL}"
+T = TypeVar("T", bound=BaseModel)
 
 
-def _make_model() -> LitellmModel:
-    return LitellmModel(model=LITELLM_MODEL_ID)
+def _parse_agent_output(raw: str | object, model_class: Type[T]) -> T:
+    """Parse an agent's string output into a Pydantic model.
+
+    Tries in order:
+    1. Already the right type (pass through)
+    2. Direct JSON parse
+    3. Extract first JSON object from mixed text
+    """
+    if isinstance(raw, model_class):
+        return raw
+    if not isinstance(raw, str):
+        raw = str(raw)
+    # Strip markdown code fences if present
+    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
+    raw = re.sub(r"\s*```$", "", raw.strip(), flags=re.MULTILINE)
+    try:
+        return model_class.model_validate_json(raw)
+    except Exception:
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            return model_class.model_validate_json(match.group())
+        raise ValueError(f"Could not parse agent output as {model_class.__name__}:\n{raw[:500]}")
+
+MAX_REFINEMENT_LOOPS = 2
 
 
-ORCHESTRATOR_PROMPT = """\
-You are the Orchestrator of a multi-agent Sector Analyst system.
+async def run_analysis(question: str) -> HypothesisReport:
+    """
+    Run the full Collect → EDA → Hypothesize pipeline for a user question.
 
-The user will ask you to analyze a sector, compare companies, or investigate
-a financial trend. Your job is to coordinate the full pipeline:
-
-  Collect → Explore → Hypothesize
-
-PIPELINE:
-
-1. Hand off to the Collector agent.
-   Pass: the user's original question, the sector or companies to analyze.
-   The Collector retrieves SEC EDGAR financial data and filing text.
-
-2. Hand off to the EDA agent.
-   Pass: the DataBundle from the Collector + the user's question.
-   The EDA agent computes financial metrics and generates charts.
-
-3. Evaluate the EDA findings.
-   - If the EDA reveals data gaps (e.g., a company is missing revenue data,
-     or only 2 years of history), loop back to the Collector with a more
-     specific request (different concepts or additional tickers).
-   - If findings are solid (specific numbers, clear trends), proceed.
-
-4. Hand off to the Hypothesis agent.
-   Pass: user question + DataBundle + EDAFindings.
-   The Hypothesis agent produces the final grounded report.
-
-Rules:
-- Never answer the analytics question yourself. Always delegate.
-- When handing off, always include the original user question as context.
-- You may iterate (Collect → EDA → Collect → EDA) at most twice before
-  forcing a hypothesis from available data.
-- Keep track of what data has been collected to avoid redundant requests.
-"""
-
-
-def build_orchestrator() -> Agent:
+    The coordinator may loop back to the Collector if EDA findings indicate
+    data gaps (iterative refinement), up to MAX_REFINEMENT_LOOPS times.
+    """
     collector = build_collector_agent()
-    eda = build_eda_agent()
-    hypothesis = build_hypothesis_agent()
+    eda_agent = build_eda_agent()
+    hypothesis_agent = build_hypothesis_agent()
 
-    return Agent(
-        name="Orchestrator",
-        model=_make_model(),
-        instructions=ORCHESTRATOR_PROMPT,
-        handoffs=[
-            handoff(collector),
-            handoff(eda),
-            handoff(hypothesis),
-        ],
+    # ── Step 1: Collect ──────────────────────────────────────────────────
+    collect_result = await Runner.run(collector, input=question)
+    data_bundle: DataBundle = _parse_agent_output(collect_result.final_output, DataBundle)
+
+    # ── Steps 2+3 with optional refinement loop ───────────────────────────
+    for loop in range(MAX_REFINEMENT_LOOPS):
+        # Step 2: EDA
+        eda_input = (
+            f"User question: {question}\n\n"
+            f"Collected data:\n{data_bundle.model_dump_json(indent=2)}"
+        )
+        eda_result = await Runner.run(eda_agent, input=eda_input)
+        eda_findings: EDAFindings = _parse_agent_output(eda_result.final_output, EDAFindings)
+
+        # Check if EDA recommends collecting more data (iterative refinement)
+        needs_more_data = _needs_refinement(eda_findings)
+        if needs_more_data and loop < MAX_REFINEMENT_LOOPS - 1:
+            refinement_prompt = (
+                f"{question}\n\n"
+                f"Previous collection summary: {data_bundle.summary}\n\n"
+                f"EDA found gaps: {eda_findings.recommended_hypothesis_direction}\n"
+                "Please collect additional data to fill these gaps."
+            )
+            collect_result = await Runner.run(collector, input=refinement_prompt)
+            additional: DataBundle = _parse_agent_output(collect_result.final_output, DataBundle)
+            # Merge records from both collections
+            data_bundle = DataBundle(
+                source=f"{data_bundle.source} + {additional.source}",
+                retrieval_method=data_bundle.retrieval_method,
+                records=data_bundle.records + additional.records,
+                metadata={**data_bundle.metadata, **additional.metadata},
+                summary=f"{data_bundle.summary}; {additional.summary}",
+            )
+            continue  # re-run EDA with enriched data
+
+        break  # EDA is sufficient, proceed to hypothesis
+
+    # ── Step 3: Hypothesize ───────────────────────────────────────────────
+    hypothesis_input = (
+        f"User question: {question}\n\n"
+        f"EDA findings:\n{eda_findings.model_dump_json(indent=2)}\n\n"
+        f"Raw data summary: {data_bundle.summary}"
     )
+    hypothesis_result = await Runner.run(hypothesis_agent, input=hypothesis_input)
+    report: HypothesisReport = _parse_agent_output(hypothesis_result.final_output, HypothesisReport)
+
+    return report
 
 
-async def run_analysis(question: str) -> str:
-    """Entry point: run the full multi-agent pipeline for a user question."""
-    orchestrator = build_orchestrator()
-    result = await Runner.run(orchestrator, input=question)
-    return result.final_output
+def _needs_refinement(findings: EDAFindings) -> bool:
+    """Heuristic: does the EDA recommendation signal missing data?"""
+    gap_keywords = ["missing", "insufficient", "need more", "additional data", "no data"]
+    direction = findings.recommended_hypothesis_direction.lower()
+    return any(kw in direction for kw in gap_keywords)
