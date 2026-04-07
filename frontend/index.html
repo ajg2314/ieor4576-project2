@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Multi-Agent Data Analyst</title>
+  <title>Sector Analyst Agent</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -17,240 +17,205 @@
     }
 
     header {
-      padding: 1.5rem 2rem;
-      border-bottom: 1px solid #2a2d3a;
+      padding: 1.25rem 2rem;
+      border-bottom: 1px solid #1f2235;
       display: flex;
       align-items: center;
       gap: 0.75rem;
     }
-
-    header h1 {
-      font-size: 1.25rem;
-      font-weight: 600;
-      color: #a78bfa;
-    }
-
+    header h1 { font-size: 1.15rem; font-weight: 600; color: #a78bfa; }
     header span {
-      font-size: 0.8rem;
-      color: #6b7280;
-      background: #1e2130;
-      padding: 0.2rem 0.6rem;
-      border-radius: 999px;
+      font-size: 0.75rem; color: #6b7280;
+      background: #1a1d2e; padding: 0.2rem 0.6rem; border-radius: 999px;
     }
 
-    .layout {
-      display: flex;
-      flex: 1;
-      overflow: hidden;
-    }
+    .layout { display: flex; flex: 1; overflow: hidden; }
 
-    /* Left: Question + Results */
+    /* ── Left panel ── */
     .main-panel {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      padding: 2rem;
-      gap: 1.5rem;
-      overflow-y: auto;
+      flex: 1; display: flex; flex-direction: column;
+      padding: 1.5rem 2rem; gap: 1.25rem; overflow-y: auto;
     }
 
-    .input-row {
-      display: flex;
-      gap: 0.75rem;
-      align-items: flex-end;
-    }
+    .input-area { display: flex; flex-direction: column; gap: 0.75rem; }
+
+    .input-row { display: flex; gap: 0.75rem; align-items: flex-end; }
 
     textarea {
-      flex: 1;
-      background: #1e2130;
-      border: 1px solid #2a2d3a;
-      border-radius: 10px;
-      color: #e8eaf0;
-      font-size: 0.95rem;
-      padding: 0.85rem 1rem;
-      resize: none;
-      min-height: 80px;
-      outline: none;
-      transition: border-color 0.2s;
+      flex: 1; background: #1a1d2e; border: 1px solid #2a2d3a;
+      border-radius: 10px; color: #e8eaf0; font-size: 0.92rem;
+      padding: 0.8rem 1rem; resize: none; min-height: 72px; outline: none;
+      transition: border-color 0.2s; line-height: 1.5;
     }
-
     textarea:focus { border-color: #7c3aed; }
     textarea::placeholder { color: #4b5563; }
 
     button#analyzeBtn {
-      background: #7c3aed;
-      border: none;
-      border-radius: 10px;
-      color: white;
-      cursor: pointer;
-      font-size: 0.95rem;
-      font-weight: 600;
-      padding: 0 1.5rem;
-      height: 48px;
+      background: #7c3aed; border: none; border-radius: 10px;
+      color: white; cursor: pointer; font-size: 0.92rem; font-weight: 600;
+      padding: 0 1.4rem; height: 46px; white-space: nowrap;
       transition: background 0.2s;
-      white-space: nowrap;
     }
     button#analyzeBtn:hover { background: #6d28d9; }
-    button#analyzeBtn:disabled { background: #374151; cursor: not-allowed; }
+    button#analyzeBtn:disabled { background: #2d2d3a; color: #6b7280; cursor: not-allowed; }
 
-    .status {
-      font-size: 0.85rem;
-      color: #6b7280;
-      display: none;
+    /* Sample questions */
+    .samples-label {
+      font-size: 0.72rem; font-weight: 600; letter-spacing: 0.06em;
+      text-transform: uppercase; color: #6b7280; margin-bottom: 0.4rem;
     }
-    .status.visible { display: block; }
+    .samples { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .sample-btn {
+      background: #1a1d2e; border: 1px solid #2a2d3a; border-radius: 8px;
+      color: #9ca3af; cursor: pointer; font-size: 0.78rem;
+      padding: 0.4rem 0.8rem; transition: all 0.15s; text-align: left;
+    }
+    .sample-btn:hover { border-color: #7c3aed; color: #c4b5fd; background: #1e1b33; }
 
-    /* Result sections */
-    .result-section {
-      display: none;
-      flex-direction: column;
-      gap: 1.25rem;
+    /* Status log */
+    .status-log {
+      display: none; flex-direction: column; gap: 0.35rem;
+      background: #1a1d2e; border: 1px solid #2a2d3a;
+      border-radius: 10px; padding: 1rem 1.25rem;
     }
+    .status-log.visible { display: flex; }
+    .status-log-title {
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; color: #7c3aed; margin-bottom: 0.25rem;
+    }
+    .status-line {
+      font-size: 0.83rem; color: #9ca3af; display: flex; align-items: center; gap: 0.5rem;
+    }
+    .status-line.active { color: #e8eaf0; }
+    .status-line .dot {
+      width: 6px; height: 6px; border-radius: 50%; background: #374151; flex-shrink: 0;
+    }
+    .status-line.active .dot { background: #7c3aed; animation: pulse 1s infinite; }
+    .status-line.done .dot { background: #10b981; animation: none; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; } 50% { opacity: 0.3; }
+    }
+
+    /* Result cards */
+    .result-section { display: none; flex-direction: column; gap: 1.25rem; }
     .result-section.visible { display: flex; }
 
     .card {
-      background: #1e2130;
-      border: 1px solid #2a2d3a;
-      border-radius: 12px;
-      padding: 1.25rem 1.5rem;
+      background: #1a1d2e; border: 1px solid #2a2d3a;
+      border-radius: 12px; padding: 1.25rem 1.5rem;
     }
-
     .card h2 {
-      font-size: 0.75rem;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #7c3aed;
-      margin-bottom: 0.75rem;
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: #7c3aed; margin-bottom: 0.75rem;
     }
+    .card-title-row {
+      display: flex; align-items: baseline; gap: 0.75rem; margin-bottom: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .card-title-row h2 { margin-bottom: 0; }
+    .report-title { font-size: 1rem; font-weight: 600; color: #f3f4f6; }
 
-    .hypothesis-text {
-      font-size: 1.1rem;
-      font-weight: 500;
-      line-height: 1.6;
-      color: #f3f4f6;
-    }
+    .hypothesis-text { font-size: 1.05rem; font-weight: 500; line-height: 1.65; color: #f3f4f6; }
 
     .confidence-badge {
-      display: inline-block;
-      margin-top: 0.5rem;
-      padding: 0.2rem 0.7rem;
-      border-radius: 999px;
-      font-size: 0.75rem;
-      font-weight: 600;
+      display: inline-block; padding: 0.2rem 0.65rem;
+      border-radius: 999px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em;
     }
     .confidence-high { background: #064e3b; color: #6ee7b7; }
     .confidence-medium { background: #422006; color: #fbbf24; }
     .confidence-low { background: #450a0a; color: #fca5a5; }
 
-    .evidence-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.6rem;
-    }
-
+    .evidence-list { display: flex; flex-direction: column; gap: 0.6rem; }
     .evidence-item {
-      background: #141621;
-      border-left: 3px solid #7c3aed;
-      padding: 0.65rem 0.9rem;
-      border-radius: 0 6px 6px 0;
-      font-size: 0.875rem;
+      background: #111320; border-left: 3px solid #7c3aed;
+      padding: 0.6rem 0.9rem; border-radius: 0 6px 6px 0; font-size: 0.85rem;
     }
-    .evidence-item .claim { color: #9ca3af; font-size: 0.8rem; margin-bottom: 0.2rem; }
-    .evidence-item .data-point { color: #e8eaf0; font-weight: 500; }
-    .evidence-item .source { color: #6b7280; font-size: 0.75rem; margin-top: 0.2rem; }
+    .evidence-item .claim { color: #6b7280; font-size: 0.78rem; margin-bottom: 0.2rem; }
+    .evidence-item .data-point { color: #e8eaf0; font-weight: 600; }
+    .evidence-item .source { color: #4b5563; font-size: 0.72rem; margin-top: 0.2rem; }
 
     .narrative-text {
-      font-size: 0.9rem;
-      line-height: 1.75;
-      color: #d1d5db;
-      white-space: pre-wrap;
+      font-size: 0.88rem; line-height: 1.8; color: #d1d5db; white-space: pre-wrap;
     }
 
-    /* Right: Artifacts panel */
+    .error-box {
+      display: none; background: #450a0a; border: 1px solid #7f1d1d;
+      border-radius: 10px; padding: 0.9rem 1.1rem;
+      font-size: 0.85rem; color: #fca5a5; white-space: pre-wrap;
+    }
+    .error-box.visible { display: block; }
+
+    /* ── Right panel: Artifacts ── */
     .artifacts-panel {
-      width: 300px;
-      border-left: 1px solid #2a2d3a;
-      padding: 1.5rem;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
+      width: 280px; border-left: 1px solid #1f2235;
+      padding: 1.25rem; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 0.75rem;
     }
-
     .artifacts-panel h2 {
-      font-size: 0.75rem;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #6b7280;
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; color: #6b7280;
     }
-
     .artifact-item {
-      background: #1e2130;
-      border: 1px solid #2a2d3a;
-      border-radius: 10px;
-      overflow: hidden;
+      background: #1a1d2e; border: 1px solid #2a2d3a;
+      border-radius: 10px; overflow: hidden;
     }
     .artifact-item img {
-      width: 100%;
-      display: block;
-      cursor: pointer;
-      transition: opacity 0.2s;
+      width: 100%; display: block; cursor: pointer;
+      transition: opacity 0.15s;
     }
     .artifact-item img:hover { opacity: 0.85; }
     .artifact-item .artifact-name {
-      font-size: 0.75rem;
-      color: #9ca3af;
-      padding: 0.5rem 0.75rem;
+      font-size: 0.72rem; color: #6b7280; padding: 0.45rem 0.7rem;
     }
     .artifact-item a {
-      display: block;
-      color: #a78bfa;
-      font-size: 0.8rem;
-      padding: 0.65rem 0.75rem;
-      text-decoration: none;
+      display: block; color: #a78bfa; font-size: 0.8rem;
+      padding: 0.6rem 0.75rem; text-decoration: none;
     }
     .artifact-item a:hover { text-decoration: underline; }
-
-    .empty-artifacts {
-      color: #4b5563;
-      font-size: 0.85rem;
-      font-style: italic;
-    }
-
-    .error-text {
-      color: #f87171;
-      font-size: 0.875rem;
-      background: #450a0a;
-      padding: 0.75rem 1rem;
-      border-radius: 8px;
-      display: none;
-    }
-    .error-text.visible { display: block; }
+    .empty-artifacts { color: #374151; font-size: 0.82rem; font-style: italic; }
   </style>
 </head>
 <body>
   <header>
-    <h1>Multi-Agent Data Analyst</h1>
-    <span>Collect → Explore → Hypothesize</span>
+    <h1>Sector Analyst Agent</h1>
+    <span>SEC EDGAR · Collect → EDA → Hypothesize</span>
   </header>
 
   <div class="layout">
     <div class="main-panel">
-      <div class="input-row">
-        <textarea id="question" placeholder="Ask an analytics question... e.g. 'How has US inflation trended over the last 5 years and what might be driving it?'" rows="3"></textarea>
-        <button id="analyzeBtn" onclick="analyze()">Analyze</button>
+
+      <div class="input-area">
+        <div class="input-row">
+          <textarea id="question"
+            placeholder="Ask a sector or company question… e.g. 'Compare NVDA and AMD revenue growth and operating margins over the last 4 years'"
+            rows="3"
+          ></textarea>
+          <button id="analyzeBtn" onclick="analyze()">Analyze</button>
+        </div>
+
+        <div>
+          <div class="samples-label">Sample questions</div>
+          <div class="samples" id="samples"></div>
+        </div>
       </div>
 
-      <div class="status" id="status">Running multi-agent pipeline... (Collect → EDA → Hypothesize)</div>
-      <div class="error-text" id="errorBox"></div>
+      <!-- Live status log -->
+      <div class="status-log" id="statusLog">
+        <div class="status-log-title">Pipeline progress</div>
+        <div id="statusLines"></div>
+      </div>
 
+      <div class="error-box" id="errorBox"></div>
+
+      <!-- Results -->
       <div class="result-section" id="results">
         <div class="card">
-          <h2>Hypothesis</h2>
+          <div class="card-title-row">
+            <h2>Hypothesis</h2>
+            <span class="report-title" id="reportTitle"></span>
+            <span class="confidence-badge" id="confidenceBadge"></span>
+          </div>
           <div class="hypothesis-text" id="hypothesisText"></div>
-          <div class="confidence-badge" id="confidenceBadge"></div>
         </div>
 
         <div class="card">
@@ -263,119 +228,189 @@
           <div class="narrative-text" id="narrativeText"></div>
         </div>
       </div>
+
     </div>
 
+    <!-- Artifacts panel -->
     <div class="artifacts-panel">
       <h2>Artifacts</h2>
       <div id="artifactsList">
-        <div class="empty-artifacts">Charts and reports will appear here after analysis.</div>
+        <div class="empty-artifacts">Charts and reports appear here after analysis.</div>
       </div>
     </div>
   </div>
 
   <script>
+    const SAMPLES = [
+      "Compare NVDA and AMD — revenue growth and operating margins over the last 4 years",
+      "Analyze Apple's profitability trends based on their SEC filings",
+      "Which hyperscaler is growing fastest: MSFT, GOOGL, or AMZN?",
+      "How has INTC's operating margin changed since 2020 compared to NVDA?",
+      "Analyze the semiconductor sector: NVDA, AMD, INTC, QCOM",
+      "Compare META and SNAP revenue growth and profitability",
+    ];
+
+    // Render sample buttons
+    const samplesEl = document.getElementById('samples');
+    SAMPLES.forEach(q => {
+      const btn = document.createElement('button');
+      btn.className = 'sample-btn';
+      btn.textContent = q;
+      btn.onclick = () => {
+        document.getElementById('question').value = q;
+        analyze();
+      };
+      samplesEl.appendChild(btn);
+    });
+
+    let activeEventSource = null;
+
+    function addStatusLine(msg, state = 'active') {
+      const container = document.getElementById('statusLines');
+      // Mark previous active line as done
+      container.querySelectorAll('.status-line.active').forEach(el => {
+        el.classList.remove('active');
+        el.classList.add('done');
+      });
+      const line = document.createElement('div');
+      line.className = `status-line ${state}`;
+      line.innerHTML = `<span class="dot"></span><span>${msg}</span>`;
+      container.appendChild(line);
+      line.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function markAllDone() {
+      document.querySelectorAll('.status-line.active').forEach(el => {
+        el.classList.remove('active');
+        el.classList.add('done');
+      });
+    }
+
     async function analyze() {
       const question = document.getElementById('question').value.trim();
       if (!question) return;
+      if (activeEventSource) { activeEventSource.close(); activeEventSource = null; }
 
       const btn = document.getElementById('analyzeBtn');
-      const status = document.getElementById('status');
+      const statusLog = document.getElementById('statusLog');
+      const statusLines = document.getElementById('statusLines');
       const errorBox = document.getElementById('errorBox');
       const results = document.getElementById('results');
 
       btn.disabled = true;
-      status.className = 'status visible';
-      errorBox.className = 'error-text';
+      errorBox.className = 'error-box';
       results.className = 'result-section';
+      statusLines.innerHTML = '';
+      statusLog.className = 'status-log visible';
+
+      addStatusLine('Starting pipeline…');
 
       try {
-        const res = await fetch('/analyze', {
+        const resp = await fetch('/analyze/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ question }),
         });
 
-        if (!res.ok) {
-          let msg = 'Analysis failed';
-          try { msg = (await res.json()).detail || msg; } catch { msg = await res.text(); }
+        if (!resp.ok) {
+          let msg = 'Request failed';
+          try { msg = (await resp.json()).detail || msg; } catch { msg = await resp.text(); }
           throw new Error(msg);
         }
 
-        const data = await res.json();
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-        // Hypothesis
-        document.getElementById('hypothesisText').textContent = data.hypothesis;
-        const badge = document.getElementById('confidenceBadge');
-        badge.textContent = `Confidence: ${data.confidence}`;
-        badge.className = `confidence-badge confidence-${data.confidence}`;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
 
-        // Evidence
-        const evidenceList = document.getElementById('evidenceList');
-        evidenceList.innerHTML = '';
-        for (const e of data.evidence) {
-          const div = document.createElement('div');
-          div.className = 'evidence-item';
-          div.innerHTML = `
-            <div class="claim">${e.claim}</div>
-            <div class="data-point">${e.data_point}</div>
-            <div class="source">Source: ${e.source}</div>
-          `;
-          evidenceList.appendChild(div);
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // keep incomplete line
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const event = JSON.parse(line.slice(6));
+
+            if (event.type === 'status') {
+              addStatusLine(event.payload);
+            } else if (event.type === 'result') {
+              markAllDone();
+              renderResult(event.payload);
+              await loadArtifacts();
+            } else if (event.type === 'error') {
+              throw new Error(event.payload);
+            }
+          }
         }
 
-        // Narrative
-        document.getElementById('narrativeText').textContent = data.narrative;
-
-        results.className = 'result-section visible';
-
-        // Refresh artifacts panel
-        await loadArtifacts();
-
       } catch (err) {
+        markAllDone();
+        addStatusLine('Pipeline failed.', 'done');
         errorBox.textContent = `Error: ${err.message}`;
-        errorBox.className = 'error-text visible';
+        errorBox.className = 'error-box visible';
       } finally {
         btn.disabled = false;
-        status.className = 'status';
       }
+    }
+
+    function renderResult(data) {
+      document.getElementById('reportTitle').textContent = data.title || '';
+      document.getElementById('hypothesisText').textContent = data.hypothesis;
+
+      const badge = document.getElementById('confidenceBadge');
+      badge.textContent = `${data.confidence} confidence`;
+      badge.className = `confidence-badge confidence-${data.confidence}`;
+
+      const evidenceList = document.getElementById('evidenceList');
+      evidenceList.innerHTML = '';
+      for (const e of (data.evidence || [])) {
+        const div = document.createElement('div');
+        div.className = 'evidence-item';
+        div.innerHTML = `
+          <div class="claim">${e.claim}</div>
+          <div class="data-point">${e.data_point}</div>
+          <div class="source">Source: ${e.source}</div>
+        `;
+        evidenceList.appendChild(div);
+      }
+
+      document.getElementById('narrativeText').textContent = data.narrative;
+      document.getElementById('results').className = 'result-section visible';
     }
 
     async function loadArtifacts() {
       try {
-        const res = await fetch('/artifacts/list');
+        const res = await fetch('/api/artifacts/list');
         const data = await res.json();
         const container = document.getElementById('artifactsList');
         container.innerHTML = '';
-
-        if (data.artifacts.length === 0) {
+        if (!data.artifacts.length) {
           container.innerHTML = '<div class="empty-artifacts">No artifacts yet.</div>';
           return;
         }
-
-        for (const artifact of data.artifacts) {
+        for (const a of data.artifacts) {
           const div = document.createElement('div');
           div.className = 'artifact-item';
-          if (artifact.name.endsWith('.png')) {
+          if (a.name.endsWith('.png')) {
             div.innerHTML = `
-              <img src="${artifact.url}" alt="${artifact.name}" onclick="window.open('${artifact.url}', '_blank')" />
-              <div class="artifact-name">${artifact.name}</div>
+              <img src="${a.url}" alt="${a.name}" onclick="window.open('${a.url}','_blank')"/>
+              <div class="artifact-name">${a.name}</div>
             `;
           } else {
-            div.innerHTML = `<a href="${artifact.url}" target="_blank">${artifact.name}</a>`;
+            div.innerHTML = `<a href="${a.url}" target="_blank">${a.name}</a>`;
           }
           container.appendChild(div);
         }
-      } catch (e) {
-        // Artifacts panel is non-critical; fail silently
-      }
+      } catch { /* non-critical */ }
     }
 
-    // Allow Ctrl+Enter to submit
-    document.getElementById('question').addEventListener('keydown', (e) => {
+    document.getElementById('question').addEventListener('keydown', e => {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) analyze();
     });
 
-    // Load artifacts on page load (for refreshes)
     loadArtifacts();
   </script>
 </body>
