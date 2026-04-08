@@ -10,7 +10,7 @@ class DataBundle(BaseModel):
     """Structured output from the Collector agent."""
     source: str = Field(description="Name/URL of the primary data source")
     retrieval_method: str = Field(description="'api', 'sql', 'web', or 'rag'")
-    records: list[dict[str, Any]] = Field(description="Retrieved data rows/records")
+    records: list[dict[str, Any]] = Field(default_factory=list, description="Retrieved data rows/records")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Source metadata (units, time range, etc.)")
     summary: str = Field(description="Short natural-language description of what was retrieved and why")
 

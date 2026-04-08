@@ -53,21 +53,24 @@ RETRIEVAL METHOD 2 — Filing Text Scraping (MD&A):
 PROCESS:
 1. Parse the user's question to identify the sector or companies of interest.
 2. If the user mentions a sector (e.g. "semiconductors"), identify 3–5 major companies.
-   Use your knowledge of which companies belong to the sector, then verify tickers.
-3. Call `fetch_sector_financials` for the full company basket.
+3. Call `fetch_sector_financials` for the full company basket. The response includes a
+   `flat_records` field — use this DIRECTLY as the DataBundle records. Do NOT summarize
+   or truncate it. Include every row from flat_records.
 4. Call `fetch_filing_text` for at least one key company to get qualitative data.
-5. Return a structured DataBundle summarizing what you retrieved.
+5. Return a structured DataBundle.
 
-The DataBundle's `records` field should be a flat list of financial data points
-suitable for the EDA agent to analyze.
+IMPORTANT — records field:
+- Do NOT copy flat_records into the output JSON. Leave "records" as an empty array [].
+- The system automatically captures records from your tool calls via a side-channel.
+- Only populate metadata and summary — these are the fields the system needs from you.
 
 OUTPUT FORMAT: Your final response must be a single JSON object with these exact keys:
 {
-  "source": "<name/URL of primary data source>",
-  "retrieval_method": "<api|sql|web|rag>",
-  "records": [{"ticker": "...", "period": "...", "metric": "...", "value": ...}, ...],
-  "metadata": {"time_range": "...", "companies": [...], ...},
-  "summary": "<short description of what was retrieved and why>"
+  "source": "SEC EDGAR XBRL API",
+  "retrieval_method": "api",
+  "records": [],
+  "metadata": {"companies": [...tickers...], "concepts": [...], "mda_summary": "..."},
+  "summary": "<short description of what was retrieved, including company names and date range>"
 }
 IMPORTANT: After all tool calls are complete, you MUST send one final text message
 containing ONLY the JSON object above. Do not stop after the last tool call.

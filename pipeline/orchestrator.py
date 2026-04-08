@@ -20,6 +20,7 @@ from .collector import build_collector_agent
 from .eda_agent import build_eda_agent
 from .hypothesis_agent import build_hypothesis_agent
 from models.schemas import DataBundle, EDAFindings, HypothesisReport
+from tools.sec_edgar import clear_record_store, get_stored_records
 
 logger = logging.getLogger(__name__)
 
@@ -166,9 +167,27 @@ async def run_analysis_with_status(
     # ── Step 1: Collect ──────────────────────────────────────────────────
     yield "status", "Step 1/3 — Collecting data from SEC EDGAR..."
 
+    # Clear the side-channel store before collection so stale records from
+    # previous runs don't bleed in.
+    clear_record_store()
     data_bundle = await _run_agent(collector, full_question, DataBundle)
 
-    yield "status", f"Data collected: {data_bundle.summary[:120]}..."
+    # Inject the records captured via the side-channel into the DataBundle.
+    # The LLM outputs an empty records list to avoid output-token overflow.
+    stored = get_stored_records()
+    if stored:
+        data_bundle = DataBundle(
+            source=data_bundle.source,
+            retrieval_method=data_bundle.retrieval_method,
+            records=stored,
+            metadata=data_bundle.metadata,
+            summary=data_bundle.summary,
+        )
+        logger.info("Injected %d records from side-channel store", len(stored))
+    else:
+        logger.warning("Side-channel store is empty — using records from LLM output (%d rows)", len(data_bundle.records))
+
+    yield "status", f"Data collected: {data_bundle.summary[:120]}... ({len(data_bundle.records)} records)"
 
     # ── Steps 2+3 with optional refinement loop ───────────────────────────
     eda_findings: EDAFindings | None = None
@@ -193,7 +212,17 @@ async def run_analysis_with_status(
                 f"EDA found gaps: {eda_findings.recommended_hypothesis_direction}\n"
                 "Please collect additional data to fill these gaps."
             )
+            clear_record_store()
             additional = await _run_agent(collector, refinement_prompt, DataBundle)
+            additional_records = get_stored_records()
+            if additional_records:
+                additional = DataBundle(
+                    source=additional.source,
+                    retrieval_method=additional.retrieval_method,
+                    records=additional_records,
+                    metadata=additional.metadata,
+                    summary=additional.summary,
+                )
             data_bundle = DataBundle(
                 source=f"{data_bundle.source} + {additional.source}",
                 retrieval_method=data_bundle.retrieval_method,

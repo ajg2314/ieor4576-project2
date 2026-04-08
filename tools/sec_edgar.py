@@ -24,6 +24,25 @@ HEADERS = {
     "Accept-Encoding": "gzip, deflate",
 }
 
+# ---------------------------------------------------------------------------
+# Side-channel record store
+# The orchestrator reads from here after the collector agent finishes, so the
+# LLM never needs to echo the full records array in its text output.
+# ---------------------------------------------------------------------------
+
+_record_store: list[dict] = []
+
+
+def clear_record_store() -> None:
+    """Clear the store before each new pipeline run."""
+    global _record_store
+    _record_store = []
+
+
+def get_stored_records() -> list[dict]:
+    """Return a copy of all records accumulated by tool calls so far."""
+    return list(_record_store)
+
 # Small rate-limiting delay between requests
 _last_request_time = 0.0
 MIN_INTERVAL = 0.12  # ~8 req/s, safely under 10/s limit
@@ -167,30 +186,60 @@ def get_company_financials(ticker: str, concepts: list[str] | None = None) -> di
     financials: dict[str, list[dict]] = {}
     for concept_key in concepts:
         candidate_tags = FINANCIAL_CONCEPTS.get(concept_key, [concept_key])
+        # Merge across ALL matching tags — companies change tag names over time
+        # (e.g. Apple switched from Revenues → RevenueFromContractWithCustomer in FY2019)
+        merged: dict[str, dict] = {}  # period → record, later tags win on overlap
         for tag in candidate_tags:
-            if tag in us_gaap:
-                units = us_gaap[tag].get("units", {})
-                # Prefer USD units
-                series = units.get("USD", units.get("shares", []))
-                # Filter to annual (10-K) and recent quarterly (10-Q) filings only
-                annual = [
-                    {"period": r["end"], "value": r["val"], "form": r.get("form", ""), "filed": r.get("filed", "")}
-                    for r in series
-                    if r.get("form") in ("10-K", "10-Q") and r.get("val") is not None
-                ]
-                # Deduplicate by period, keep most recent filing
-                seen: dict[str, dict] = {}
-                for rec in sorted(annual, key=lambda x: x["filed"]):
-                    seen[rec["period"]] = rec
-                financials[concept_key] = sorted(seen.values(), key=lambda x: x["period"])[-40:]
-                break  # Found a matching tag
+            if tag not in us_gaap:
+                continue
+            units = us_gaap[tag].get("units", {})
+            series = units.get("USD", units.get("shares", []))
+            annual = [
+                {
+                    "period": r["end"],
+                    "value": r["val"],
+                    "form": r.get("form", ""),
+                    "filed": r.get("filed", ""),
+                    "tag": tag,
+                }
+                for r in series
+                if r.get("form") in ("10-K", "10-Q") and r.get("val") is not None
+            ]
+            # Within each tag, keep most-recently-filed record per period
+            for rec in sorted(annual, key=lambda x: x["filed"]):
+                # Earlier tags fill gaps; later (more specific) tags overwrite on overlap
+                if rec["period"] not in merged:
+                    merged[rec["period"]] = rec
+        if merged:
+            financials[concept_key] = sorted(merged.values(), key=lambda x: x["period"])[-40:]
+
+    # Build flat records — one row per (ticker, period, metric)
+    # This is the format the EDA agent consumes directly
+    flat_records = []
+    for concept_key, series in financials.items():
+        for rec in series:
+            flat_records.append({
+                "ticker": company["ticker"],
+                "company": company["title"],
+                "period": rec["period"],
+                "fiscal_year": rec["period"][:4],
+                "form": rec["form"],
+                "metric": concept_key,
+                "value": rec["value"],
+                "value_billions": round(rec["value"] / 1e9, 3) if isinstance(rec["value"], (int, float)) else rec["value"],
+            })
+
+    # Push records into the side-channel store so the orchestrator can
+    # retrieve them without the LLM needing to echo them in its text output.
+    _record_store.extend(flat_records)
 
     return {
         "ticker": company["ticker"],
         "company_name": company["title"],
         "cik": company["cik"],
         "financials": financials,
-        "available_concepts": list(us_gaap.keys())[:50],  # sample for agent reference
+        "flat_records": flat_records,
+        "available_concepts": list(us_gaap.keys())[:50],
     }
 
 
@@ -213,7 +262,17 @@ def get_sector_financials(tickers: list[str], concepts: list[str] | None = None)
         except Exception as e:
             errors.append(f"{ticker}: {e}")
 
-    return {"companies": results, "errors": errors, "ticker_count": len(results)}
+    # Aggregate all flat records across companies for easy EDA consumption
+    all_flat = []
+    for company_data in results.values():
+        all_flat.extend(company_data.get("flat_records", []))
+
+    return {
+        "companies": results,
+        "flat_records": all_flat,
+        "errors": errors,
+        "ticker_count": len(results),
+    }
 
 
 # ---------------------------------------------------------------------------
