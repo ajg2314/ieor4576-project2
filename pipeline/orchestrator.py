@@ -231,10 +231,11 @@ async def _run_agent(
 # ── Data helpers ──────────────────────────────────────────────────────────────
 
 def _compact_for_eda(bundle: DataBundle) -> DataBundle:
-    """Filter DataBundle to annual 10-K records for the last EDA_MAX_YEARS fiscal years.
+    """Filter DataBundle to deduplicated annual 10-K records for the last EDA_MAX_YEARS years.
 
-    The EDA agent receives this as its context. Keeping it to ~100–150 rows prevents
-    context overflow that causes Gemini to stop without producing output.
+    Deduplication key: (ticker, fiscal_year, metric) — one clean row per data point.
+    This is the final safety net; get_stored_records() already deduplicates on
+    (ticker, period, metric), but different period end-dates can share a fiscal_year.
     """
     annual = [r for r in bundle.records if r.get("form") == "10-K"]
     if not annual:
@@ -244,15 +245,22 @@ def _compact_for_eda(bundle: DataBundle) -> DataBundle:
     keep_years = set(years[:EDA_MAX_YEARS])
     filtered = [r for r in annual if r.get("fiscal_year") in keep_years]
 
+    # Deduplicate: one record per (ticker, fiscal_year, metric), keep latest period
+    seen: dict[tuple, dict] = {}
+    for r in sorted(filtered, key=lambda x: x.get("period", "")):
+        key = (r.get("ticker"), r.get("fiscal_year"), r.get("metric"))
+        seen[key] = r  # later period (more recent filing) wins
+    deduped = list(seen.values())
+
     logger.info(
-        "EDA compact: %d total → %d annual → %d after year filter (%s)",
-        len(bundle.records), len(annual), len(filtered),
+        "EDA compact: %d total → %d annual → %d year-filtered → %d deduplicated (%s)",
+        len(bundle.records), len(annual), len(filtered), len(deduped),
         ", ".join(sorted(keep_years, reverse=True)),
     )
     return DataBundle(
         source=bundle.source,
         retrieval_method=bundle.retrieval_method,
-        records=filtered,
+        records=deduped,
         metadata=bundle.metadata,
         summary=bundle.summary,
     )

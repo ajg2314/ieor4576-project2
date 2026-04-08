@@ -40,8 +40,17 @@ def clear_record_store() -> None:
 
 
 def get_stored_records() -> list[dict]:
-    """Return a copy of all records accumulated by tool calls so far."""
-    return list(_record_store)
+    """Return deduplicated records accumulated by tool calls.
+
+    Deduplicates on (ticker, period, metric) — last write wins, so if the
+    collector called fetch_company_financials and fetch_sector_financials for
+    the same ticker, only one record per data point is returned.
+    """
+    seen: dict[tuple, dict] = {}
+    for r in _record_store:
+        key = (r.get("ticker"), r.get("period"), r.get("metric"))
+        seen[key] = r  # last write wins
+    return list(seen.values())
 
 # Small rate-limiting delay between requests
 _last_request_time = 0.0
@@ -205,11 +214,11 @@ def get_company_financials(ticker: str, concepts: list[str] | None = None) -> di
                 for r in series
                 if r.get("form") in ("10-K", "10-Q") and r.get("val") is not None
             ]
-            # Within each tag, keep most-recently-filed record per period
+            # Within each tag, keep the most-recently-filed record per period.
+            # Sorting ascending by filed means the last write wins per period,
+            # so amended/restated filings replace the original.
             for rec in sorted(annual, key=lambda x: x["filed"]):
-                # Earlier tags fill gaps; later (more specific) tags overwrite on overlap
-                if rec["period"] not in merged:
-                    merged[rec["period"]] = rec
+                merged[rec["period"]] = rec  # always overwrite → latest filing wins
         if merged:
             financials[concept_key] = sorted(merged.values(), key=lambda x: x["period"])[-40:]
 
