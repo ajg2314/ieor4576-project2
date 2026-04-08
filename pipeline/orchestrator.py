@@ -447,9 +447,10 @@ async def run_analysis_with_status(
         yield "status", f"Step 3/4 — Running exploratory data analysis{loop_label}..."
 
         # ── Stage 1: tool calls ───────────────────────────────────────────
-        # Write data to disk so tools can read it without bloating the prompt.
+        # load_eda_data writes records to disk, pre-generates standard charts,
+        # and seeds _eda_observations with those auto charts.
         data_summary = load_eda_data(compact_bundle.records)
-        clear_eda_store()
+        # clear_eda_store() is a no-op — store was reset by load_eda_data.
         eda_input = (
             f"User question: {question}\n\n"
             f"Sector: {plan.sector} | Companies: {', '.join(plan.tickers)}\n\n"
