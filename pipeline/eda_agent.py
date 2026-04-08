@@ -1,27 +1,38 @@
 """EDA Agent — exploratory financial data analysis on SEC filing data.
 
-Architecture: data-store pattern (not prompt injection)
+Data architecture:
+  All records (10-K annual + 10-Q quarterly, full history) are loaded into
+  a SQLite database at artifacts/eda.db before Stage 1 runs.
 
-The full dataset is written to a JSON file before the agent runs.
-Tools read from that file directly — the agent's prompt only contains
-a compact ~200-char summary of what data is available.
+  The agent has four ways to access data:
+    1. sql_query(sql)   — run any SELECT; returns rows as list of dicts
+    2. run_python(code) — pandas + sklearn + scipy; df pre-loaded from DB
+    3. plot_metric(metric) — one-liner chart for a metric across all companies
+    4. plot_margins(num, den) — one-liner ratio/margin chart
 
-Key design decisions:
-- load_eda_data() auto-generates the two standard charts (revenue trend +
-  operating margin) before Stage 1 runs, guaranteeing ≥2 charts per report.
-- plot_metric() / plot_margins() give the agent one-liner chart creation —
-  no need to manually build series_data from raw records.
-- run_python() pre-loads df and records so the agent can do arbitrary analysis.
+  Standard charts (Revenue Trend, Operating Margin %, Gross Margin %) are
+  auto-generated when the DB loads, guaranteeing ≥2 charts per report.
+
+DB schema (table: financials):
+    ticker       TEXT   — e.g. "NVDA"
+    company      TEXT   — full company name
+    period       TEXT   — ISO date of period end, e.g. "2023-01-29"
+    fiscal_year  TEXT   — 4-digit year, e.g. "2023"
+    form         TEXT   — "10-K" or "10-Q"
+    metric       TEXT   — e.g. "revenue", "operating_income"
+    value        REAL   — raw value in dollars
+    value_billions REAL — value / 1e9, rounded to 3 dp
 
 Two-stage output:
-  Stage 1 — agent makes tool calls; results captured in _eda_observations.
-  Stage 2 — fresh tiny LLM call synthesises observations → EDAFindings JSON.
+  Stage 1 — agent runs tools; results captured in _eda_observations.
+  Stage 2 — fresh tiny LLM call synthesises observations → EDAFindings.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from agents import Agent, function_tool
 from agents.extensions.models.litellm_model import LitellmModel
 
@@ -31,149 +42,171 @@ from tools.visualizer import line_chart, bar_chart, waterfall_chart
 
 LITELLM_MODEL_ID = f"vertex_ai/{os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')}"
 
-# ── Data store ─────────────────────────────────────────────────────────────────
+# ── Data store paths ───────────────────────────────────────────────────────────
 
-_EDA_DATA_FILE: str = str(ARTIFACTS_DIR / "eda_data.json")
+_EDA_DB_FILE: str = str(ARTIFACTS_DIR / "eda.db")
 _EDA_DATA_SUMMARY: str = ""
 _eda_observations: list[dict] = []
 
 
-def _load_records() -> list[dict]:
-    try:
-        with open(_EDA_DATA_FILE) as fh:
-            return json.load(fh)
-    except Exception:
-        return []
+# ── DB helpers ─────────────────────────────────────────────────────────────────
+
+def _get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(_EDA_DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-def _build_series(records: list[dict], metric: str) -> dict[str, dict[str, float]]:
-    """Build series_data = {ticker: {fiscal_year: value_billions}} for a metric."""
+def load_eda_db(all_records: list[dict]) -> None:
+    """Load ALL records (10-K + 10-Q, full history) into SQLite.
+
+    Creates the 'financials' table fresh on each pipeline run.
+    This is called with the full uncompacted record set so the agent
+    has access to quarterly data and full history via SQL.
+    """
+    conn = sqlite3.connect(_EDA_DB_FILE)
+    conn.execute("DROP TABLE IF EXISTS financials")
+    conn.execute("""
+        CREATE TABLE financials (
+            ticker        TEXT,
+            company       TEXT,
+            period        TEXT,
+            fiscal_year   TEXT,
+            form          TEXT,
+            metric        TEXT,
+            value         REAL,
+            value_billions REAL
+        )
+    """)
+    conn.executemany(
+        "INSERT INTO financials VALUES (?,?,?,?,?,?,?,?)",
+        [
+            (
+                r.get("ticker", ""),
+                r.get("company", ""),
+                r.get("period", ""),
+                r.get("fiscal_year", ""),
+                r.get("form", ""),
+                r.get("metric", ""),
+                r.get("value"),
+                r.get("value_billions"),
+            )
+            for r in all_records
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+
+def _build_series(metric: str, form: str = "10-K") -> dict[str, dict[str, float]]:
+    """Build {ticker: {fiscal_year: value_billions}} for auto-charts."""
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT ticker, fiscal_year, value_billions FROM financials "
+        "WHERE metric=? AND form=? AND value_billions IS NOT NULL "
+        "ORDER BY fiscal_year",
+        (metric, form),
+    ).fetchall()
+    conn.close()
     series: dict[str, dict[str, float]] = {}
-    for r in records:
-        if r.get("metric") != metric:
-            continue
-        ticker = r.get("ticker", "")
-        year = str(r.get("fiscal_year", ""))
-        val = r.get("value_billions")
-        if ticker and year and val is not None:
-            series.setdefault(ticker, {})[year] = float(val)
+    for row in rows:
+        series.setdefault(row["ticker"], {})[row["fiscal_year"]] = row["value_billions"]
     return series
 
 
-def _auto_generate_charts(records: list[dict]) -> list[dict]:
-    """Pre-generate the two standard charts before the EDA agent runs.
-
-    Returns a list of observation dicts to pre-populate the store.
-    This guarantees at least 2 charts in every report regardless of
-    what the agent does in Stage 1.
-    """
+def _auto_generate_charts() -> list[dict]:
+    """Pre-generate standard charts from the DB. Called by load_eda_data()."""
     auto_obs: list[dict] = []
 
-    # 1. Revenue trend
-    rev_series = _build_series(records, "revenue")
+    # Revenue trend
+    rev_series = _build_series("revenue")
     if rev_series:
-        tickers = sorted(rev_series.keys())
         path = line_chart(
-            {t: rev_series[t] for t in tickers},
-            "Revenue Trend",
+            rev_series, "Revenue Trend",
             subtitle="Annual 10-K filings | USD billions",
-            y_format="billions",
-            filename="revenue_trend",
+            y_format="billions", filename="revenue_trend",
         )
-        auto_obs.append({
-            "tool": "auto_chart",
-            "description": "Revenue Trend",
-            "value": path,
-            "artifact_path": path,
-        })
+        auto_obs.append({"tool": "auto_chart", "description": "Revenue Trend",
+                          "value": path, "artifact_path": path})
 
-    # 2. Operating margin %
-    rev = _build_series(records, "revenue")
-    op = _build_series(records, "operating_income")
+    # Operating margin %
+    rev = _build_series("revenue")
+    op = _build_series("operating_income")
     if rev and op:
         margin_series: dict[str, dict[str, float]] = {}
         for ticker in set(rev) & set(op):
-            for year in set(rev[ticker]) & set(op[ticker]):
-                r_val = rev[ticker][year]
-                o_val = op[ticker][year]
-                if r_val and r_val != 0:
-                    margin_series.setdefault(ticker, {})[year] = round(o_val / r_val * 100, 2)
+            for year in set(rev.get(ticker, {})) & set(op.get(ticker, {})):
+                r, o = rev[ticker].get(year, 0), op[ticker].get(year, 0)
+                if r:
+                    margin_series.setdefault(ticker, {})[year] = round(o / r * 100, 2)
         if margin_series:
             path = line_chart(
-                margin_series,
-                "Operating Margin %",
+                margin_series, "Operating Margin %",
                 subtitle="Operating income / Revenue | Annual 10-K",
-                y_format="pct",
-                filename="operating_margin",
+                y_format="pct", filename="operating_margin",
             )
-            auto_obs.append({
-                "tool": "auto_chart",
-                "description": "Operating Margin %",
-                "value": path,
-                "artifact_path": path,
-            })
+            auto_obs.append({"tool": "auto_chart", "description": "Operating Margin %",
+                              "value": path, "artifact_path": path})
 
-    # 3. Gross margin % (if available)
-    gp = _build_series(records, "gross_profit")
+    # Gross margin %
+    gp = _build_series("gross_profit")
     if rev and gp:
         gm_series: dict[str, dict[str, float]] = {}
         for ticker in set(rev) & set(gp):
-            for year in set(rev[ticker]) & set(gp[ticker]):
-                r_val = rev[ticker][year]
-                g_val = gp[ticker][year]
-                if r_val and r_val != 0:
-                    gm_series.setdefault(ticker, {})[year] = round(g_val / r_val * 100, 2)
+            for year in set(rev.get(ticker, {})) & set(gp.get(ticker, {})):
+                r, g = rev[ticker].get(year, 0), gp[ticker].get(year, 0)
+                if r:
+                    gm_series.setdefault(ticker, {})[year] = round(g / r * 100, 2)
         if gm_series:
             path = line_chart(
-                gm_series,
-                "Gross Margin %",
+                gm_series, "Gross Margin %",
                 subtitle="Gross profit / Revenue | Annual 10-K",
-                y_format="pct",
-                filename="gross_margin",
+                y_format="pct", filename="gross_margin",
             )
-            auto_obs.append({
-                "tool": "auto_chart",
-                "description": "Gross Margin %",
-                "value": path,
-                "artifact_path": path,
-            })
+            auto_obs.append({"tool": "auto_chart", "description": "Gross Margin %",
+                              "value": path, "artifact_path": path})
 
     return auto_obs
 
 
-def load_eda_data(records: list[dict]) -> str:
-    """Write compact records to disk, pre-generate standard charts, return summary."""
-    global _EDA_DATA_FILE, _EDA_DATA_SUMMARY, _eda_observations
+def load_eda_data(compact_records: list[dict]) -> str:
+    """Pre-generate standard charts and return a data summary for the EDA prompt.
 
-    path = str(ARTIFACTS_DIR / "eda_data.json")
-    with open(path, "w") as fh:
-        json.dump(records, fh)
-    _EDA_DATA_FILE = path
+    NOTE: call load_eda_db(all_records) BEFORE this so the DB is populated.
+    compact_records is only used to build the summary (tickers/metrics/years).
+    """
+    global _EDA_DATA_SUMMARY, _eda_observations
 
-    tickers = sorted(set(r.get("ticker", "") for r in records if r.get("ticker")))
-    metrics = sorted(set(r.get("metric", "") for r in records if r.get("metric")))
-    years = sorted(set(r.get("fiscal_year", "") for r in records if r.get("fiscal_year")))
+    # Read summary info from DB (more complete than compact_records)
+    conn = _get_conn()
+    tickers = [r[0] for r in conn.execute(
+        "SELECT DISTINCT ticker FROM financials ORDER BY ticker").fetchall()]
+    metrics = [r[0] for r in conn.execute(
+        "SELECT DISTINCT metric FROM financials ORDER BY metric").fetchall()]
+    years = [r[0] for r in conn.execute(
+        "SELECT DISTINCT fiscal_year FROM financials WHERE form='10-K' "
+        "ORDER BY fiscal_year").fetchall()]
+    total = conn.execute("SELECT COUNT(*) FROM financials").fetchone()[0]
+    annual = conn.execute(
+        "SELECT COUNT(*) FROM financials WHERE form='10-K'").fetchone()[0]
+    conn.close()
 
-    # Pre-generate standard charts and seed the observation store
-    auto_obs = _auto_generate_charts(records)
-    _eda_observations = list(auto_obs)  # reset store with auto charts
+    # Auto-generate standard charts; seed observation store
+    _eda_observations = _auto_generate_charts()
 
     _EDA_DATA_SUMMARY = (
-        f"Available data ({len(records)} records, 10-K annual filings):\n"
+        f"Financial data loaded into SQLite (table: financials).\n"
+        f"Total rows: {total} ({annual} annual 10-K + {total-annual} quarterly 10-Q)\n"
         f"Companies ({len(tickers)}): {', '.join(tickers)}\n"
         f"Metrics: {', '.join(metrics)}\n"
-        f"Fiscal years: {years[0] if years else '?'} – {years[-1] if years else '?'}\n"
-        f"Standard charts already generated: Revenue Trend, Operating Margin %, "
-        f"Gross Margin % (if data available).\n"
-        f"Use plot_metric() or plot_margins() to add more charts.\n"
+        f"Annual fiscal years available: {years[0] if years else '?'} – {years[-1] if years else '?'}\n"
+        f"Standard charts pre-generated: Revenue Trend, Operating Margin %, Gross Margin %.\n"
     )
     return _EDA_DATA_SUMMARY
 
 
 def clear_eda_store() -> None:
-    """Clear observations BUT keep auto-generated charts (seeded by load_eda_data)."""
-    # Do NOT clear — load_eda_data already reset the store with auto charts.
-    # This function is a no-op; kept for API compatibility.
+    """No-op — load_eda_data() owns the store reset."""
     pass
 
 
@@ -192,49 +225,66 @@ def _make_model() -> LitellmModel:
 EDA_PROMPT = """\
 You are the EDA (Exploratory Data Analysis) agent for a Sector Analyst system.
 
-The financial data is on disk. Your tools access it automatically — no need to
-pass records as parameters. Standard charts (Revenue Trend, Operating Margin,
-Gross Margin) are already generated. Your job is to add deeper analysis and
-additional charts on top of those.
+The financial data is in a SQLite database. Standard charts are already generated.
+Your job: run deeper analysis, compute growth rates / margins / regressions,
+and generate additional charts.
 
-TOOLS:
+━━ DATA ACCESS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-1. `stats_tool(metric, group_by)` — statistics for one metric.
-   metric: e.g. "revenue", "operating_income", "gross_profit", "rd_expense"
-   group_by: "ticker" (default) or "fiscal_year"
+DB table: financials
+Columns: ticker, company, period, fiscal_year, form, metric, value, value_billions
+form values: '10-K' (annual) or '10-Q' (quarterly)
+metric values: revenue, net_income, operating_income, gross_profit, rd_expense, ...
 
-2. `filter_group_tool(metric, ticker, year, group_by, aggregate_fn)` — filter data.
+Example queries:
+  SELECT ticker, fiscal_year, value_billions
+  FROM financials WHERE metric='revenue' AND form='10-K'
+  ORDER BY ticker, fiscal_year
 
-3. `run_python(code)` — pandas/numpy code. df and records are pre-loaded.
-   df columns: ticker, company, fiscal_year, metric, value, value_billions
-   Example:
-     rev = df[df.metric=='revenue'].pivot(index='fiscal_year', columns='ticker', values='value_billions')
-     growth = rev.pct_change() * 100
-     print(growth.to_string())
+  SELECT ticker, AVG(value_billions) as avg_rev
+  FROM financials WHERE metric='revenue' AND form='10-K'
+  GROUP BY ticker ORDER BY avg_rev DESC
 
-4. `plot_metric(metric, chart_type, y_format, title)` — one-liner chart.
-   Automatically groups by ticker and fiscal_year. Just name the metric.
-   Examples:
-     plot_metric("revenue")                          → revenue trend line chart
-     plot_metric("rd_expense", y_format="billions")  → R&D spend chart
-     plot_metric("net_income", title="Net Income Comparison")
+━━ TOOLS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-5. `plot_margins(numerator_metric, denominator_metric, title)` — ratio/margin chart.
-   Computes (numerator / denominator * 100) per company per year automatically.
-   Examples:
-     plot_margins("operating_income", "revenue", "Operating Margin %")
-     plot_margins("rd_expense", "revenue", "R&D Intensity %")
-     plot_margins("gross_profit", "revenue", "Gross Margin %")
+1. sql_query(sql) — run any SELECT query. Returns list of row dicts.
+   Use for quick lookups, aggregations, rankings.
 
-6. `create_chart(chart_type, series_data, title, subtitle, y_format, filename)` — custom chart.
-   Use when you need a waterfall, bar chart, or custom series (e.g. YoY growth rates).
+2. run_python(code) — full Python environment: pandas, numpy, scipy, sklearn.
+   conn and df are pre-loaded:
+     conn = sqlite3.connect('...eda.db')
+     df   = pd.read_sql("SELECT * FROM financials", conn)
+   Use for: pivot tables, YoY growth, CAGR, linear regression, correlation.
+   IMPORTANT: print() every computed result — outputs are captured for the report.
 
-ANALYSIS TASKS (do as many as the data supports):
-- Call stats_tool on revenue and operating_income to get growth rates per company
-- Call run_python to compute CAGR, rank companies by growth
-- Call plot_metric("rd_expense") if R&D data exists — R&D intensity is key for tech
-- Call plot_margins("rd_expense", "revenue", "R&D Intensity %") for tech sectors
-- Identify the #1 outlier company and explain why with numbers
+3. plot_metric(metric, chart_type, y_format, title)
+   One-liner chart for a metric across all companies (annual 10-K).
+   Examples: plot_metric("rd_expense")
+             plot_metric("net_income", title="Net Income Trend")
+
+4. plot_margins(numerator_metric, denominator_metric, title)
+   Auto-computes ratio % per company per year and plots it.
+   Examples: plot_margins("rd_expense", "revenue", "R&D Intensity %")
+             plot_margins("net_income", "revenue", "Net Margin %")
+
+5. create_chart(chart_type, series_data, title, subtitle, y_format, filename)
+   Custom chart with manually specified data. Use for:
+   - Bar chart of a single year's metric across companies
+   - Waterfall chart of revenue composition
+   - Custom computed series (e.g. YoY growth rates from run_python)
+
+━━ ANALYSIS PLAN ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Work through as many of these as the data supports:
+□ sql_query: rank companies by average revenue
+□ sql_query: find which company has the highest revenue CAGR
+□ run_python: compute YoY revenue growth % per company; print a table
+□ run_python: linear regression of revenue vs year for each company (slope = growth trend)
+□ run_python: compute correlation matrix across metrics
+□ plot_metric("rd_expense") if R&D data is available
+□ plot_margins("rd_expense", "revenue", "R&D Intensity %")
+□ plot_margins("net_income", "revenue", "Net Margin %")
+□ Identify the single biggest outlier vs peers
 
 Make all your tool calls. You do not need to write any final message.
 """
@@ -243,73 +293,56 @@ Make all your tool calls. You do not need to write any final message.
 # ── Tool wrappers ─────────────────────────────────────────────────────────────
 
 @function_tool(strict_mode=False)
-def stats_tool(metric: str, group_by: str = "ticker") -> dict:
-    """Compute statistics (mean, median, growth rate) for a financial metric.
-    metric: e.g. 'revenue', 'operating_income', 'gross_profit', 'rd_expense'
-    group_by: 'ticker' or 'fiscal_year'
-    """
-    records = [r for r in _load_records() if r.get("metric") == metric]
-    if not records:
-        return {"error": f"No records for metric='{metric}'"}
-    result = compute_statistics(records, ["value_billions"], group_by=group_by)
-    _eda_observations.append({
-        "tool": "stats_tool",
-        "description": f"Statistics for {metric} by {group_by}",
-        "value": str(result)[:500],
-        "artifact_path": None,
-    })
-    return result
+def sql_query(sql: str) -> list[dict]:
+    """Run a SELECT query on the financials table. Returns list of row dicts.
 
-
-@function_tool(strict_mode=False)
-def filter_group_tool(
-    metric: str,
-    ticker: str | None = None,
-    year: str | None = None,
-    group_by: str = "ticker",
-    aggregate_fn: str = "mean",
-) -> dict:
-    """Filter and aggregate financial data by metric, ticker, and/or year.
-    metric: required. ticker/year: optional filters.
+    Table: financials(ticker, company, period, fiscal_year, form, metric, value, value_billions)
+    Always filter form='10-K' for annual comparisons, or '10-Q' for quarterly trends.
     """
-    records = [r for r in _load_records() if r.get("metric") == metric]
-    if ticker:
-        records = [r for r in records if r.get("ticker") == ticker]
-    if year:
-        records = [r for r in records if r.get("fiscal_year") == year]
-    if not records:
-        return {"error": f"No records for metric='{metric}' ticker='{ticker}' year='{year}'"}
-    result = group_and_filter(
-        records, "ticker", group_by=group_by,
-        aggregate_column="value_billions", aggregate_fn=aggregate_fn,
-    )
-    _eda_observations.append({
-        "tool": "filter_group_tool",
-        "description": f"{metric} by {group_by}" + (f" for {ticker}" if ticker else ""),
-        "value": str(result)[:500],
-        "artifact_path": None,
-    })
-    return result
+    try:
+        conn = _get_conn()
+        rows = conn.execute(sql).fetchall()
+        conn.close()
+        result = [dict(r) for r in rows]
+        _eda_observations.append({
+            "tool": "sql_query",
+            "description": sql.strip()[:120],
+            "value": str(result[:5])[:500] + (f" ... ({len(result)} rows total)" if len(result) > 5 else ""),
+            "artifact_path": None,
+        })
+        return result
+    except Exception as e:
+        return [{"error": str(e), "sql": sql}]
 
 
 @function_tool(strict_mode=False)
 def run_python(code: str) -> dict:
-    """Execute pandas/numpy code. df and records are pre-loaded from disk.
-    df columns: ticker, company, fiscal_year, metric, value, value_billions
-    Print all computed values to stdout.
+    """Execute Python code with pandas, numpy, scipy, sklearn.
+
+    Pre-loaded variables:
+      conn  = sqlite3.connect(db_path)
+      df    = pd.read_sql("SELECT * FROM financials", conn)
+    df columns: ticker, company, period, fiscal_year, form, metric, value, value_billions
+
+    Print ALL computed results to stdout — they are captured for the report.
     """
     preamble = (
-        f"import json, pandas as pd, numpy as np\n"
-        f"with open({repr(_EDA_DATA_FILE)}) as _f:\n"
-        f"    records = json.load(_f)\n"
-        f"df = pd.DataFrame(records)\n"
+        "import sqlite3, pandas as pd, numpy as np\n"
+        "from scipy import stats\n"
+        "try:\n"
+        "    from sklearn.linear_model import LinearRegression\n"
+        "except ImportError:\n"
+        "    pass\n"
+        f"conn = sqlite3.connect({repr(_EDA_DB_FILE)})\n"
+        "df = pd.read_sql(\"SELECT * FROM financials\", conn)\n"
+        "conn.close()\n"
     )
     result = execute_python(preamble + code)
     stdout = result.get("stdout", "").strip()
     _eda_observations.append({
         "tool": "run_python",
-        "description": "Python computation",
-        "value": stdout[:600] if stdout else result.get("stderr", "")[:300],
+        "description": "Python analysis",
+        "value": stdout[:800] if stdout else result.get("stderr", "")[:400],
         "artifact_path": None,
     })
     return result
@@ -322,31 +355,23 @@ def plot_metric(
     y_format: str = "billions",
     title: str | None = None,
 ) -> str:
-    """Plot a financial metric for all companies automatically.
+    """Plot a financial metric for all companies (annual 10-K data only).
 
-    One-liner chart creation — no need to build series_data manually.
     metric: e.g. 'revenue', 'rd_expense', 'net_income', 'gross_profit'
-    chart_type: 'line' (default) or 'bar'
-    y_format: 'billions' (default) or 'pct' or 'raw'
-    title: optional override (default: metric name formatted)
-
+    chart_type: 'line' or 'bar'
+    y_format: 'billions' or 'pct' or 'raw'
     Returns: relative path to saved PNG.
     """
-    records = _load_records()
-    series = _build_series(records, metric)
+    series = _build_series(metric)
     if not series:
-        return f"No data found for metric='{metric}'"
+        return f"No data for metric='{metric}'"
     chart_title = title or metric.replace("_", " ").title()
-    subtitle = "Annual 10-K filings"
-    if chart_type == "bar":
-        path = bar_chart(series, chart_title, subtitle=subtitle, y_format=y_format, filename=metric)
-    else:
-        path = line_chart(series, chart_title, subtitle=subtitle, y_format=y_format, filename=metric)
+    fn = bar_chart if chart_type == "bar" else line_chart
+    path = fn(series, chart_title, subtitle="Annual 10-K filings",
+               y_format=y_format, filename=metric)
     _eda_observations.append({
-        "tool": "plot_metric",
-        "description": chart_title,
-        "value": path,
-        "artifact_path": path,
+        "tool": "plot_metric", "description": chart_title,
+        "value": path, "artifact_path": path,
     })
     return path
 
@@ -359,43 +384,30 @@ def plot_margins(
 ) -> str:
     """Compute and plot a margin/ratio (numerator/denominator * 100) per company per year.
 
-    One-liner for any ratio chart — handles the computation automatically.
     Examples:
-      plot_margins('operating_income', 'revenue', 'Operating Margin %')
       plot_margins('rd_expense', 'revenue', 'R&D Intensity %')
-      plot_margins('gross_profit', 'revenue', 'Gross Margin %')
-
+      plot_margins('net_income', 'revenue', 'Net Margin %')
     Returns: relative path to saved PNG.
     """
-    records = _load_records()
-    num_series = _build_series(records, numerator_metric)
-    den_series = _build_series(records, denominator_metric)
-    if not num_series or not den_series:
-        return f"Missing data for {numerator_metric} or {denominator_metric}"
-
-    margin_series: dict[str, dict[str, float]] = {}
-    for ticker in set(num_series) & set(den_series):
-        for year in set(num_series[ticker]) & set(den_series[ticker]):
-            d = den_series[ticker][year]
-            if d and d != 0:
-                pct = round(num_series[ticker][year] / d * 100, 2)
-                margin_series.setdefault(ticker, {})[year] = pct
-
-    if not margin_series:
-        return f"Could not compute margins — no overlapping data"
-
-    chart_title = title or f"{numerator_metric.replace('_',' ').title()} / {denominator_metric.replace('_',' ').title()} %"
-    path = line_chart(
-        margin_series, chart_title,
-        subtitle="Annual 10-K filings",
-        y_format="pct",
-        filename=f"{numerator_metric}_over_{denominator_metric}",
-    )
+    num = _build_series(numerator_metric)
+    den = _build_series(denominator_metric)
+    if not num or not den:
+        return f"No data for '{numerator_metric}' or '{denominator_metric}'"
+    series: dict[str, dict[str, float]] = {}
+    for ticker in set(num) & set(den):
+        for year in set(num.get(ticker, {})) & set(den.get(ticker, {})):
+            d = den[ticker].get(year, 0)
+            if d:
+                series.setdefault(ticker, {})[year] = round(num[ticker][year] / d * 100, 2)
+    if not series:
+        return "No overlapping data to compute margin"
+    chart_title = title or f"{numerator_metric} / {denominator_metric} %"
+    path = line_chart(series, chart_title, subtitle="Annual 10-K filings",
+                      y_format="pct",
+                      filename=f"{numerator_metric}_over_{denominator_metric}")
     _eda_observations.append({
-        "tool": "plot_margins",
-        "description": chart_title,
-        "value": path,
-        "artifact_path": path,
+        "tool": "plot_margins", "description": chart_title,
+        "value": path, "artifact_path": path,
     })
     return path
 
@@ -409,8 +421,8 @@ def create_chart(
     y_format: str = "billions",
     filename: str = "chart",
 ) -> str:
-    """Generate a custom chart with manually specified series_data.
-    Use for waterfall charts, bar charts, or custom computed series (e.g. YoY growth %).
+    """Custom chart with manually specified series_data.
+    Use for waterfall, bar, or custom computed series (e.g. YoY growth rates).
     series_data: {series_name: {x_label: y_value}}
     """
     if chart_type == "line":
@@ -420,12 +432,10 @@ def create_chart(
     elif chart_type == "waterfall":
         path = waterfall_chart(series_data, title, subtitle=subtitle, y_format=y_format, filename=filename)
     else:
-        return f"Unknown chart_type '{chart_type}'. Use 'line', 'bar', or 'waterfall'."
+        return f"Unknown chart_type '{chart_type}'"
     _eda_observations.append({
-        "tool": "create_chart",
-        "description": title,
-        "value": path,
-        "artifact_path": path,
+        "tool": "create_chart", "description": title,
+        "value": path, "artifact_path": path,
     })
     return path
 
@@ -437,6 +447,5 @@ def build_eda_agent() -> Agent:
         name="EDA",
         model=_make_model(),
         instructions=EDA_PROMPT,
-        tools=[stats_tool, filter_group_tool, run_python,
-               plot_metric, plot_margins, create_chart],
+        tools=[sql_query, run_python, plot_metric, plot_margins, create_chart],
     )

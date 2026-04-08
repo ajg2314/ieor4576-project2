@@ -33,7 +33,10 @@ import litellm
 
 from .planner import build_planner_agent
 from .collector import build_collector_agent
-from .eda_agent import build_eda_agent, clear_eda_store, get_eda_observations, load_eda_data
+from .eda_agent import (
+    build_eda_agent, clear_eda_store, get_eda_observations,
+    load_eda_db, load_eda_data,
+)
 from .hypothesis_agent import build_hypothesis_agent
 from models.schemas import SectorPlan, DataBundle, EDAFindings, EDAFinding, HypothesisReport
 from tools.sec_edgar import clear_record_store, get_stored_records
@@ -447,10 +450,11 @@ async def run_analysis_with_status(
         yield "status", f"Step 3/4 — Running exploratory data analysis{loop_label}..."
 
         # ── Stage 1: tool calls ───────────────────────────────────────────
-        # load_eda_data writes records to disk, pre-generates standard charts,
-        # and seeds _eda_observations with those auto charts.
+        # Load ALL records (10-K + 10-Q, full history) into SQLite so the
+        # agent can query any slice it needs via sql_query / run_python.
+        load_eda_db(data_bundle.records)
+        # load_eda_data pre-generates standard charts and builds the summary.
         data_summary = load_eda_data(compact_bundle.records)
-        # clear_eda_store() is a no-op — store was reset by load_eda_data.
         eda_input = (
             f"User question: {question}\n\n"
             f"Sector: {plan.sector} | Companies: {', '.join(plan.tickers)}\n\n"
