@@ -66,14 +66,29 @@ def _extract_text(result: RunResult) -> str:
 
 # ── JSON parsing ──────────────────────────────────────────────────────────────
 
+def _sanitise_json(text: str) -> str:
+    """Fix common LLM JSON errors before parsing.
+
+    - Strip markdown code fences
+    - Remove invalid escape sequences (e.g. \' which is not valid JSON)
+    """
+    text = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.MULTILINE)
+    text = re.sub(r"\s*```$", "", text.strip(), flags=re.MULTILINE)
+    # \' is not a valid JSON escape — apostrophes need no escaping in JSON
+    text = text.replace("\\'", "'")
+    # Remove other invalid single-char escapes that are not in the JSON spec
+    # Valid: \" \\ \/ \b \f \n \r \t \uXXXX
+    text = re.sub(r"\\([^\"\\\/bfnrtu])", r"\1", text)
+    return text
+
+
 def _parse_text(raw: str, model_class: Type[T]) -> T:
     """Parse a raw string into a Pydantic model (strips fences, regex fallback)."""
     if not raw.strip():
         raise ValueError(
             f"Agent produced no text output for {model_class.__name__}."
         )
-    cleaned = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
-    cleaned = re.sub(r"\s*```$", "", cleaned.strip(), flags=re.MULTILINE)
+    cleaned = _sanitise_json(raw)
     try:
         return model_class.model_validate_json(cleaned)
     except Exception:
