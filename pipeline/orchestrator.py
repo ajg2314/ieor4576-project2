@@ -16,8 +16,9 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
-from typing import AsyncGenerator, TypeVar, Type
+from typing import Any, AsyncGenerator, TypeVar, Type
 
 from agents import Runner, RunResult, ItemHelpers
 from agents.items import MessageOutputItem
@@ -41,9 +42,9 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 MAX_REFINEMENT_LOOPS = 2
-MAX_RATE_LIMIT_RETRIES = 4
-RATE_LIMIT_BACKOFF_BASE = 20  # seconds; doubles each retry (20, 40, 80, 160)
-INTER_STEP_DELAY = 3  # seconds between pipeline steps to stay under quota
+RATE_LIMIT_MAX_WAIT = 60      # cap per-retry wait at 60 seconds
+RATE_LIMIT_INITIAL_WAIT = 15  # first wait before retry
+INTER_STEP_DELAY = 3          # seconds between pipeline steps to reduce burst
 
 # Maximum annual fiscal years to pass to the EDA agent (keeps context manageable)
 EDA_MAX_YEARS = 7
@@ -141,62 +142,90 @@ def _is_rate_limit(exc: Exception) -> bool:
     if LiteLLMRateLimitError and isinstance(exc, LiteLLMRateLimitError):
         return True
     msg = str(exc).lower()
-    return "429" in msg or "rate limit" in msg or "resource_exhausted" in msg or "resource exhausted" in msg
+    return (
+        "429" in msg
+        or "rate limit" in msg
+        or "ratelimit" in msg
+        or "resource_exhausted" in msg
+        or "resource exhausted" in msg
+        or "too many requests" in msg
+    )
 
 
-async def _runner_run_with_backoff(agent, input_data) -> RunResult:
-    """Call Runner.run() with exponential backoff on 429 rate-limit errors."""
-    for attempt in range(MAX_RATE_LIMIT_RETRIES):
-        try:
-            return await Runner.run(agent, input=input_data)
-        except Exception as exc:
-            if _is_rate_limit(exc) and attempt < MAX_RATE_LIMIT_RETRIES - 1:
-                wait = RATE_LIMIT_BACKOFF_BASE * (2 ** attempt)
-                logger.warning(
-                    "Rate limit hit for %s — waiting %ds before retry %d/%d",
-                    agent.name, wait, attempt + 1, MAX_RATE_LIMIT_RETRIES - 1,
-                )
-                await asyncio.sleep(wait)
-            else:
-                raise
-    raise RuntimeError("unreachable")  # pragma: no cover
+async def _run_agent(
+    agent,
+    input: Any,
+    model_class: Type[T],
+    *,
+    _status_sink: list[str] | None = None,
+) -> T:
+    """Run an agent with unlimited 429 retries and optional nudge for empty output.
 
+    Rate-limit waits are appended to _status_sink (a list) so the caller can
+    yield them as frontend status messages between steps.
 
-async def _run_agent(agent, input, model_class: Type[T]) -> T:
-    """Run an agent and parse its output.
-
-    Gemini sometimes stops after tool calls without emitting a final text message.
-    We send up to two nudges with an explicit JSON template before giving up.
-    All Runner.run() calls go through _runner_run_with_backoff for 429 resilience.
+    Backs off with capped exponential + jitter: 15s, 30s, 45s, 60s, 60s, ...
+    Never gives up on rate limits — only raises on real errors.
     """
-    result = await _runner_run_with_backoff(agent, input)
-    raw = _extract_text(result)
+    attempt = 0
+    while True:
+        try:
+            result = await Runner.run(agent, input=input)
+        except Exception as exc:
+            if _is_rate_limit(exc):
+                wait = min(
+                    RATE_LIMIT_INITIAL_WAIT * (2 ** min(attempt, 4))
+                    + random.uniform(0, 5),
+                    RATE_LIMIT_MAX_WAIT,
+                )
+                wait_int = int(wait)
+                msg = (
+                    f"Rate limit from Vertex AI — waiting {wait_int}s before retry "
+                    f"(attempt {attempt + 1})..."
+                )
+                logger.warning("Rate limit on %s (attempt %d) — waiting %ds", agent.name, attempt + 1, wait_int)
+                if _status_sink is not None:
+                    _status_sink.append(msg)
+                await asyncio.sleep(wait)
+                attempt += 1
+                continue
+            raise  # non-rate-limit errors propagate immediately
 
-    for attempt in range(2):
-        if raw.strip():
-            break
-        logger.warning(
-            "%s produced no text (attempt %d) — nudging for JSON output",
-            agent.name, attempt + 1,
-        )
-        template = _json_template(model_class)
-        nudge = (
-            f"Your tool calls are complete. Now write your final response.\n"
-            f"Output ONLY valid JSON matching this structure (fill in real values):\n"
-            f"{template}\n"
-            f"No markdown fences. No other text. Just the JSON."
-        )
-        continued = result.to_input_list() + [{"role": "user", "content": nudge}]
-        result = await _runner_run_with_backoff(agent, continued)
         raw = _extract_text(result)
 
-    if not raw.strip():
-        raise ValueError(
-            f"Agent '{agent.name}' produced no text output for {model_class.__name__} "
-            f"after two nudges. Check the agent's prompt and model configuration."
-        )
+        # Nudge if model stopped after tool calls without emitting text
+        for nudge_num in range(2):
+            if raw.strip():
+                break
+            logger.warning("%s: no text output (nudge %d)", agent.name, nudge_num + 1)
+            template = _json_template(model_class)
+            nudge = (
+                "Your tool calls are complete. Now write your final response.\n"
+                "Output ONLY valid JSON matching this structure (fill in real values):\n"
+                f"{template}\n"
+                "No markdown fences. No other text. Just the JSON."
+            )
+            continued = result.to_input_list() + [{"role": "user", "content": nudge}]
+            try:
+                result = await Runner.run(agent, input=continued)
+            except Exception as exc:
+                if _is_rate_limit(exc):
+                    wait = min(RATE_LIMIT_INITIAL_WAIT + random.uniform(0, 5), RATE_LIMIT_MAX_WAIT)
+                    wait_int = int(wait)
+                    if _status_sink is not None:
+                        _status_sink.append(f"Rate limit during nudge — waiting {wait_int}s...")
+                    await asyncio.sleep(wait)
+                    attempt += 1
+                    break  # retry outer loop
+                raise
+            raw = _extract_text(result)
 
-    return _parse_text(raw, model_class)
+        if not raw.strip():
+            # Outer loop will retry from scratch
+            attempt += 1
+            continue
+
+        return _parse_text(raw, model_class)
 
 
 # ── Data helpers ──────────────────────────────────────────────────────────────
@@ -276,7 +305,8 @@ Output ONLY this JSON, no other text:
 }}"""
 
     model_id = f"vertex_ai/{os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')}"
-    for attempt in range(MAX_RATE_LIMIT_RETRIES):
+    attempt = 0
+    while True:
         try:
             resp = await litellm.acompletion(
                 model=model_id,
@@ -297,10 +327,14 @@ Output ONLY this JSON, no other text:
                     ))
             return findings
         except Exception as exc:
-            if _is_rate_limit(exc) and attempt < MAX_RATE_LIMIT_RETRIES - 1:
-                wait = RATE_LIMIT_BACKOFF_BASE * (2 ** attempt)
-                logger.warning("Rate limit on EDA synthesis — retrying in %ds", wait)
+            if _is_rate_limit(exc):
+                wait = min(
+                    RATE_LIMIT_INITIAL_WAIT * (2 ** min(attempt, 4)) + random.uniform(0, 5),
+                    RATE_LIMIT_MAX_WAIT,
+                )
+                logger.warning("Rate limit on EDA synthesis (attempt %d) — waiting %ds", attempt + 1, int(wait))
                 await asyncio.sleep(wait)
+                attempt += 1
             else:
                 raise
 
@@ -337,10 +371,19 @@ async def run_analysis_with_status(
             f"Follow-up question: {question}"
         )
 
+    def _drain(sink: list[str]):
+        """Yield and clear any rate-limit status messages queued during an agent call."""
+        msgs, sink[:] = list(sink), []
+        return msgs
+
+    rate_sink: list[str] = []  # rate-limit wait messages accumulate here
+
     # ── Step 0: Plan ─────────────────────────────────────────────────────
     yield "status", "Step 1/4 — Researching sector and identifying key companies..."
 
-    plan = await _run_agent(planner, full_question, SectorPlan)
+    plan = await _run_agent(planner, full_question, SectorPlan, _status_sink=rate_sink)
+    for msg in _drain(rate_sink):
+        yield "status", msg
 
     yield "status", (
         f"Research plan: {plan.sector} | "
@@ -353,7 +396,6 @@ async def run_analysis_with_status(
     # ── Step 1: Collect ───────────────────────────────────────────────────
     yield "status", f"Step 2/4 — Fetching SEC EDGAR data for {len(plan.tickers)} companies..."
 
-    # Build a collector brief that includes the planner's researched company list
     collector_brief = (
         f"Research brief from Planner:\n"
         f"Sector: {plan.sector}\n"
@@ -364,9 +406,10 @@ async def run_analysis_with_status(
     )
 
     clear_record_store()
-    data_bundle = await _run_agent(collector, collector_brief, DataBundle)
+    data_bundle = await _run_agent(collector, collector_brief, DataBundle, _status_sink=rate_sink)
+    for msg in _drain(rate_sink):
+        yield "status", msg
 
-    # Inject records from the side-channel (LLM output has records: [] to avoid truncation)
     stored = get_stored_records()
     if stored:
         data_bundle = DataBundle(
@@ -378,10 +421,7 @@ async def run_analysis_with_status(
         )
         logger.info("Injected %d records from side-channel store", len(stored))
     else:
-        logger.warning(
-            "Side-channel store empty — falling back to LLM output (%d rows)",
-            len(data_bundle.records),
-        )
+        logger.warning("Side-channel store empty — falling back to LLM output (%d rows)", len(data_bundle.records))
 
     yield "status", (
         f"Data collected: {len(data_bundle.records)} records across "
@@ -399,9 +439,6 @@ async def run_analysis_with_status(
         yield "status", f"Step 3/4 — Running exploratory data analysis{loop_label}..."
 
         # ── Stage 1: tool calls ───────────────────────────────────────────
-        # The EDA agent makes all its tool calls (stats, charts, python).
-        # Results are captured in the side-channel store. We don't require
-        # the agent to produce any text output here.
         clear_eda_store()
         eda_input = (
             f"User question: {question}\n\n"
@@ -410,15 +447,34 @@ async def run_analysis_with_status(
             f"last {EDA_MAX_YEARS} fiscal years, 10-K only):\n"
             f"{compact_bundle.model_dump_json(indent=2)}"
         )
+        eda_findings = None
         try:
-            result = await _runner_run_with_backoff(eda_agent, eda_input)
-            # Capture any text the agent did emit (bonus — not required)
+            # EDA Stage 1 doesn't go through _run_agent because we don't require
+            # text output — charts/stats are captured in the EDA side-channel store.
+            attempt = 0
+            while True:
+                try:
+                    result = await Runner.run(eda_agent, input=eda_input)
+                    break
+                except Exception as exc:
+                    if _is_rate_limit(exc):
+                        wait = min(
+                            RATE_LIMIT_INITIAL_WAIT * (2 ** min(attempt, 4)) + random.uniform(0, 5),
+                            RATE_LIMIT_MAX_WAIT,
+                        )
+                        wait_int = int(wait)
+                        msg = f"Rate limit — waiting {wait_int}s before EDA retry {attempt + 1}..."
+                        logger.warning(msg)
+                        yield "status", msg
+                        await asyncio.sleep(wait)
+                        attempt += 1
+                    else:
+                        raise
+
             raw = _extract_text(result)
             if raw.strip():
-                logger.info("EDA Stage 1 produced text output (%d chars) — using it", len(raw))
                 try:
                     eda_findings = _parse_text(raw, EDAFindings)
-                    # Still ensure chart paths from store are included
                     for obs in get_eda_observations():
                         if obs.get("artifact_path"):
                             existing = {f.artifact_path for f in eda_findings.findings}
@@ -430,16 +486,11 @@ async def run_analysis_with_status(
                                     artifact_path=obs["artifact_path"],
                                 ))
                 except Exception:
-                    eda_findings = None  # fall through to Stage 2
+                    eda_findings = None
         except Exception as exc:
-            if not _is_rate_limit(exc):
-                logger.error("EDA Stage 1 failed: %s", exc)
-            else:
-                raise
+            logger.error("EDA Stage 1 failed: %s", exc)
 
         # ── Stage 2: synthesis ────────────────────────────────────────────
-        # Fresh, clean LLM call — only sees compact observations, not the
-        # full tool-call history. Reliably produces the EDAFindings JSON.
         if eda_findings is None:
             yield "status", "EDA tool calls complete — synthesising findings..."
             await asyncio.sleep(INTER_STEP_DELAY)
@@ -464,7 +515,9 @@ async def run_analysis_with_status(
                 "Please collect additional data to fill these gaps."
             )
             clear_record_store()
-            additional = await _run_agent(collector, refinement_prompt, DataBundle)
+            additional = await _run_agent(collector, refinement_prompt, DataBundle, _status_sink=rate_sink)
+            for msg in _drain(rate_sink):
+                yield "status", msg
             additional_records = get_stored_records()
             if additional_records:
                 additional = DataBundle(
@@ -495,9 +548,10 @@ async def run_analysis_with_status(
         f"EDA findings:\n{eda_findings.model_dump_json(indent=2)}\n\n"
         f"Data summary: {data_bundle.summary}"
     )
-    report = await _run_agent(hypothesis_agent, hypothesis_input, HypothesisReport)
+    report = await _run_agent(hypothesis_agent, hypothesis_input, HypothesisReport, _status_sink=rate_sink)
+    for msg in _drain(rate_sink):
+        yield "status", msg
 
-    # Collect all chart paths from EDA findings + hypothesis report
     chart_paths: list[str] = []
     for finding in eda_findings.findings:
         if finding.artifact_path:
@@ -509,9 +563,7 @@ async def run_analysis_with_status(
         "hypothesis": report.hypothesis,
         "evidence": [e.model_dump() for e in report.evidence],
         "narrative": report.narrative,
-        "artifact_paths": [
-            p.replace("artifacts/", "/files/") for p in chart_paths
-        ],
+        "artifact_paths": [p.replace("artifacts/", "/files/") for p in chart_paths],
         "confidence": report.confidence,
         "title": report.title,
         "sector": plan.sector,
