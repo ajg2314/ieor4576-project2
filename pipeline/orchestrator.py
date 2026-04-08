@@ -33,7 +33,7 @@ import litellm
 
 from .planner import build_planner_agent
 from .collector import build_collector_agent
-from .eda_agent import build_eda_agent, clear_eda_store, get_eda_observations
+from .eda_agent import build_eda_agent, clear_eda_store, get_eda_observations, load_eda_data
 from .hypothesis_agent import build_hypothesis_agent
 from models.schemas import SectorPlan, DataBundle, EDAFindings, EDAFinding, HypothesisReport
 from tools.sec_edgar import clear_record_store, get_stored_records
@@ -439,13 +439,15 @@ async def run_analysis_with_status(
         yield "status", f"Step 3/4 — Running exploratory data analysis{loop_label}..."
 
         # ── Stage 1: tool calls ───────────────────────────────────────────
+        # Write data to disk so tools can read it without bloating the prompt.
+        data_summary = load_eda_data(compact_bundle.records)
         clear_eda_store()
         eda_input = (
             f"User question: {question}\n\n"
             f"Sector: {plan.sector} | Companies: {', '.join(plan.tickers)}\n\n"
-            f"Annual financial data ({len(compact_bundle.records)} records, "
-            f"last {EDA_MAX_YEARS} fiscal years, 10-K only):\n"
-            f"{compact_bundle.model_dump_json(indent=2)}"
+            f"{data_summary}\n"
+            f"Call your tools now. Tools read the data automatically — "
+            f"do not pass records as parameters, just pass metric names and tickers."
         )
         eda_findings = None
         try:
