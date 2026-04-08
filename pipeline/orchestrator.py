@@ -12,6 +12,7 @@ Yields SSE-style (event_type, payload) tuples for live frontend streaming.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -20,6 +21,11 @@ from typing import AsyncGenerator, TypeVar, Type
 from agents import Runner, RunResult, ItemHelpers
 from agents.items import MessageOutputItem
 from pydantic import BaseModel
+
+try:
+    from litellm.exceptions import RateLimitError as LiteLLMRateLimitError
+except ImportError:
+    LiteLLMRateLimitError = None  # type: ignore
 
 from .planner import build_planner_agent
 from .collector import build_collector_agent
@@ -32,6 +38,9 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 MAX_REFINEMENT_LOOPS = 2
+MAX_RATE_LIMIT_RETRIES = 4
+RATE_LIMIT_BACKOFF_BASE = 20  # seconds; doubles each retry (20, 40, 80, 160)
+INTER_STEP_DELAY = 3  # seconds between pipeline steps to stay under quota
 
 # Maximum annual fiscal years to pass to the EDA agent (keeps context manageable)
 EDA_MAX_YEARS = 7
@@ -109,13 +118,40 @@ def _json_template(model_class: Type[T]) -> str:
 
 # ── Agent runner ──────────────────────────────────────────────────────────────
 
+def _is_rate_limit(exc: Exception) -> bool:
+    """Return True if the exception is a 429 / resource-exhausted error."""
+    if LiteLLMRateLimitError and isinstance(exc, LiteLLMRateLimitError):
+        return True
+    msg = str(exc).lower()
+    return "429" in msg or "rate limit" in msg or "resource_exhausted" in msg or "resource exhausted" in msg
+
+
+async def _runner_run_with_backoff(agent, input_data) -> RunResult:
+    """Call Runner.run() with exponential backoff on 429 rate-limit errors."""
+    for attempt in range(MAX_RATE_LIMIT_RETRIES):
+        try:
+            return await Runner.run(agent, input=input_data)
+        except Exception as exc:
+            if _is_rate_limit(exc) and attempt < MAX_RATE_LIMIT_RETRIES - 1:
+                wait = RATE_LIMIT_BACKOFF_BASE * (2 ** attempt)
+                logger.warning(
+                    "Rate limit hit for %s — waiting %ds before retry %d/%d",
+                    agent.name, wait, attempt + 1, MAX_RATE_LIMIT_RETRIES - 1,
+                )
+                await asyncio.sleep(wait)
+            else:
+                raise
+    raise RuntimeError("unreachable")  # pragma: no cover
+
+
 async def _run_agent(agent, input, model_class: Type[T]) -> T:
     """Run an agent and parse its output.
 
     Gemini sometimes stops after tool calls without emitting a final text message.
     We send up to two nudges with an explicit JSON template before giving up.
+    All Runner.run() calls go through _runner_run_with_backoff for 429 resilience.
     """
-    result = await Runner.run(agent, input=input)
+    result = await _runner_run_with_backoff(agent, input)
     raw = _extract_text(result)
 
     for attempt in range(2):
@@ -133,7 +169,7 @@ async def _run_agent(agent, input, model_class: Type[T]) -> T:
             f"No markdown fences. No other text. Just the JSON."
         )
         continued = result.to_input_list() + [{"role": "user", "content": nudge}]
-        result = await Runner.run(agent, input=continued)
+        result = await _runner_run_with_backoff(agent, continued)
         raw = _extract_text(result)
 
     if not raw.strip():
@@ -218,6 +254,8 @@ async def run_analysis_with_status(
         + (f" +{len(plan.tickers)-8} more" if len(plan.tickers) > 8 else "")
     )
 
+    await asyncio.sleep(INTER_STEP_DELAY)
+
     # ── Step 1: Collect ───────────────────────────────────────────────────
     yield "status", f"Step 2/4 — Fetching SEC EDGAR data for {len(plan.tickers)} companies..."
 
@@ -256,6 +294,8 @@ async def run_analysis_with_status(
         f"{len(set(r.get('ticker','') for r in data_bundle.records))} companies"
     )
 
+    await asyncio.sleep(INTER_STEP_DELAY)
+
     # ── Steps 2+3 with optional refinement loop ───────────────────────────
     eda_findings: EDAFindings | None = None
     compact_bundle = _compact_for_eda(data_bundle)
@@ -274,6 +314,8 @@ async def run_analysis_with_status(
         eda_findings = await _run_agent(eda_agent, eda_input, EDAFindings)
 
         yield "status", f"Key insight: {eda_findings.key_insight[:140]}..."
+
+        await asyncio.sleep(INTER_STEP_DELAY)
 
         if _needs_refinement(eda_findings) and loop < MAX_REFINEMENT_LOOPS - 1:
             yield "status", "EDA found data gaps — collecting additional data..."
