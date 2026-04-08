@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from typing import AsyncGenerator, TypeVar, Type
 
@@ -27,11 +28,13 @@ try:
 except ImportError:
     LiteLLMRateLimitError = None  # type: ignore
 
+import litellm
+
 from .planner import build_planner_agent
 from .collector import build_collector_agent
-from .eda_agent import build_eda_agent
+from .eda_agent import build_eda_agent, clear_eda_store, get_eda_observations
 from .hypothesis_agent import build_hypothesis_agent
-from models.schemas import SectorPlan, DataBundle, EDAFindings, HypothesisReport
+from models.schemas import SectorPlan, DataBundle, EDAFindings, EDAFinding, HypothesisReport
 from tools.sec_edgar import clear_record_store, get_stored_records
 
 logger = logging.getLogger(__name__)
@@ -211,6 +214,82 @@ def _compact_for_eda(bundle: DataBundle) -> DataBundle:
     )
 
 
+async def _synthesise_eda_findings(
+    question: str,
+    sector: str,
+    observations: list[dict],
+) -> EDAFindings:
+    """Stage 2 of EDA: fresh LLM call to synthesise observations into EDAFindings JSON.
+
+    This call has a small, clean context (~1-2KB) so it reliably produces output,
+    even when Stage 1 (the tool-calling agent) produced nothing.
+    """
+    if not observations:
+        return EDAFindings(
+            findings=[],
+            key_insight="No tool results captured — data may be insufficient.",
+            recommended_hypothesis_direction="Collect more data and retry.",
+        )
+
+    obs_text = "\n".join(
+        f"- [{o['tool']}] {o['description']}: {o['value']}"
+        + (f" → saved to {o['artifact_path']}" if o.get("artifact_path") else "")
+        for o in observations
+    )
+
+    chart_obs = [o for o in observations if o.get("artifact_path")]
+
+    synthesis_prompt = f"""\
+You are summarising the results of an exploratory data analysis of {sector} companies.
+
+User question: {question}
+
+Tool call results from the EDA phase:
+{obs_text}
+
+Based ONLY on the above results, produce a JSON EDAFindings object.
+Include one finding entry per tool call above. For chart tool calls, set artifact_path to the path shown.
+
+Output ONLY this JSON, no other text:
+{{
+  "findings": [
+    {{"tool_name": "create_chart", "description": "Revenue Trend", "value": "see chart", "artifact_path": "artifacts/revenue_trend_xxx.png"}},
+    {{"tool_name": "run_python", "description": "...", "value": "...", "artifact_path": null}}
+  ],
+  "key_insight": "<single most important pattern with specific numbers from the results above>",
+  "recommended_hypothesis_direction": "<what the hypothesis agent should focus on>"
+}}"""
+
+    model_id = f"vertex_ai/{os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')}"
+    for attempt in range(MAX_RATE_LIMIT_RETRIES):
+        try:
+            resp = await litellm.acompletion(
+                model=model_id,
+                messages=[{"role": "user", "content": synthesis_prompt}],
+                temperature=0.2,
+            )
+            raw = resp.choices[0].message.content or ""
+            findings = _parse_text(raw, EDAFindings)
+            # Ensure chart artifact paths are present even if LLM missed them
+            chart_paths_in_findings = {f.artifact_path for f in findings.findings if f.artifact_path}
+            for obs in chart_obs:
+                if obs["artifact_path"] not in chart_paths_in_findings:
+                    findings.findings.append(EDAFinding(
+                        tool_name="create_chart",
+                        description=obs["description"],
+                        value=obs["artifact_path"],
+                        artifact_path=obs["artifact_path"],
+                    ))
+            return findings
+        except Exception as exc:
+            if _is_rate_limit(exc) and attempt < MAX_RATE_LIMIT_RETRIES - 1:
+                wait = RATE_LIMIT_BACKOFF_BASE * (2 ** attempt)
+                logger.warning("Rate limit on EDA synthesis — retrying in %ds", wait)
+                await asyncio.sleep(wait)
+            else:
+                raise
+
+
 def _needs_refinement(findings: EDAFindings) -> bool:
     gap_keywords = ["missing", "insufficient", "need more", "additional data", "no data"]
     return any(kw in findings.recommended_hypothesis_direction.lower() for kw in gap_keywords)
@@ -304,14 +383,54 @@ async def run_analysis_with_status(
         loop_label = f" (refinement #{loop})" if loop > 0 else ""
         yield "status", f"Step 3/4 — Running exploratory data analysis{loop_label}..."
 
+        # ── Stage 1: tool calls ───────────────────────────────────────────
+        # The EDA agent makes all its tool calls (stats, charts, python).
+        # Results are captured in the side-channel store. We don't require
+        # the agent to produce any text output here.
+        clear_eda_store()
         eda_input = (
             f"User question: {question}\n\n"
-            f"Sector plan: {plan.sector} | Companies: {', '.join(plan.tickers)}\n\n"
+            f"Sector: {plan.sector} | Companies: {', '.join(plan.tickers)}\n\n"
             f"Annual financial data ({len(compact_bundle.records)} records, "
             f"last {EDA_MAX_YEARS} fiscal years, 10-K only):\n"
             f"{compact_bundle.model_dump_json(indent=2)}"
         )
-        eda_findings = await _run_agent(eda_agent, eda_input, EDAFindings)
+        try:
+            result = await _runner_run_with_backoff(eda_agent, eda_input)
+            # Capture any text the agent did emit (bonus — not required)
+            raw = _extract_text(result)
+            if raw.strip():
+                logger.info("EDA Stage 1 produced text output (%d chars) — using it", len(raw))
+                try:
+                    eda_findings = _parse_text(raw, EDAFindings)
+                    # Still ensure chart paths from store are included
+                    for obs in get_eda_observations():
+                        if obs.get("artifact_path"):
+                            existing = {f.artifact_path for f in eda_findings.findings}
+                            if obs["artifact_path"] not in existing:
+                                eda_findings.findings.append(EDAFinding(
+                                    tool_name="create_chart",
+                                    description=obs["description"],
+                                    value=obs["artifact_path"],
+                                    artifact_path=obs["artifact_path"],
+                                ))
+                except Exception:
+                    eda_findings = None  # fall through to Stage 2
+        except Exception as exc:
+            if not _is_rate_limit(exc):
+                logger.error("EDA Stage 1 failed: %s", exc)
+            else:
+                raise
+
+        # ── Stage 2: synthesis ────────────────────────────────────────────
+        # Fresh, clean LLM call — only sees compact observations, not the
+        # full tool-call history. Reliably produces the EDAFindings JSON.
+        if eda_findings is None:
+            yield "status", "EDA tool calls complete — synthesising findings..."
+            await asyncio.sleep(INTER_STEP_DELAY)
+            observations = get_eda_observations()
+            logger.info("EDA synthesis from %d observations", len(observations))
+            eda_findings = await _synthesise_eda_findings(question, plan.sector, observations)
 
         yield "status", f"Key insight: {eda_findings.key_insight[:140]}..."
 
