@@ -6,6 +6,18 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class SectorPlan(BaseModel):
+    """Structured output from the Planner agent — scope and company list for a research question."""
+    sector: str = Field(description="Sector or industry name (e.g. 'Semiconductors', 'Cloud Software')")
+    expanded_query: str = Field(description="Enriched version of the user's question with full context")
+    tickers: list[str] = Field(description="10-20 ticker symbols covering the sector's most important companies")
+    rationale: str = Field(description="Brief explanation of why these companies were selected")
+    focus_metrics: list[str] = Field(
+        default_factory=lambda: ["revenue", "gross_profit", "operating_income", "net_income", "rd_expense"],
+        description="Financial metrics most relevant to answering the question",
+    )
+
+
 class DataBundle(BaseModel):
     """Structured output from the Collector agent."""
     source: str = Field(description="Name/URL of the primary data source")
