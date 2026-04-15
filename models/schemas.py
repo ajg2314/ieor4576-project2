@@ -51,6 +51,41 @@ class EvidencePoint(BaseModel):
     source: str = Field(description="Which tool/dataset this came from")
 
 
+class ResearchSource(BaseModel):
+    """A single source consulted during qualitative research."""
+    title: str
+    url: str
+    snippet: str = Field(description="Key excerpt or summary from this source")
+
+
+class ResearchContext(BaseModel):
+    """Structured output from the Research agent — qualitative sector intelligence."""
+    sector: str
+    technology_context: str = Field(
+        description="Key technology trends, product cycles, and what the market is betting on for 3-5 years"
+    )
+    market_context: str = Field(
+        description="Supply/demand dynamics, competitive landscape, who is gaining/losing share and why"
+    )
+    geopolitical_context: str = Field(
+        default="",
+        description="Government policies, trade actions, export controls, geographic risks, subsidies — with specific names, dates, and impact on companies"
+    )
+    expert_sentiment: str = Field(
+        description="Specific analyst opinions, price targets, earnings call themes, and investor perspectives"
+    )
+    key_risks: list[str] = Field(
+        description="Top 3-5 specific risks with mechanism of impact"
+    )
+    qualitative_insights: list[str] = Field(
+        description="Forward-looking insights: what the market is pricing in, competitive dynamics, policy factors shaping the next 2-3 years"
+    )
+    sources_consulted: list[ResearchSource] = Field(
+        default_factory=list,
+        description="Web sources, analyst reports, and articles reviewed"
+    )
+
+
 class HypothesisReport(BaseModel):
     """Structured output from the Hypothesis agent — the final deliverable."""
     title: str
@@ -59,3 +94,99 @@ class HypothesisReport(BaseModel):
     narrative: str = Field(description="Full natural-language report with reasoning")
     artifact_paths: list[str] = Field(default_factory=list, description="Paths to charts/reports saved to disk")
     confidence: str = Field(description="'high', 'medium', or 'low' — justified by evidence strength")
+
+
+# ── Phase 1 expansion schemas ─────────────────────────────────────────────────
+
+class PeerInfo(BaseModel):
+    """Validated, enriched data for one peer company from market data sources."""
+    ticker: str
+    company_name: str = Field(default="")
+    market_cap_b: float | None = Field(default=None, description="Market cap in billions USD")
+    sector: str = Field(default="")
+    industry: str = Field(default="")
+    valid: bool = Field(default=True, description="False if ticker failed validation or market cap < threshold")
+
+
+class PeerList(BaseModel):
+    """Output of peer_discovery: validated, sorted, enriched ticker universe."""
+    sector: str
+    peers: list[PeerInfo]
+    tickers: list[str] = Field(description="Valid ticker symbols sorted by market cap descending")
+    selection_rationale: str = Field(default="")
+
+
+class ValuationMetrics(BaseModel):
+    """Per-company valuation data fetched from live market data sources."""
+    ticker: str
+    company_name: str = Field(default="")
+    current_price: float | None = None
+    market_cap_b: float | None = None
+    pe_trailing: float | None = None
+    pe_forward: float | None = None
+    ev_ebitda: float | None = None
+    ev_revenue: float | None = None
+    price_to_book: float | None = None
+    ytd_return_pct: float | None = None
+    analyst_recommendation: str | None = None
+    price_target: float | None = None
+
+
+class ValuationContext(BaseModel):
+    """Output of ValuationAgent: sector comp table + median multiples + interpretation."""
+    sector: str
+    as_of_date: str = Field(description="ISO date string of when data was fetched")
+    metrics: list[ValuationMetrics]
+    sector_median_pe: float | None = None
+    sector_median_ev_ebitda: float | None = None
+    summary: str = Field(description="LLM interpretation of relative valuations across peers")
+
+
+class SentimentContext(BaseModel):
+    """Output of SentimentAgent: market sentiment synthesis from news and analyst commentary."""
+    sector: str
+    overall_sentiment: str = Field(description="'bullish', 'neutral', or 'bearish'")
+    sentiment_score: float = Field(description="Float from -1.0 (bearish) to 1.0 (bullish)")
+    key_themes: list[str] = Field(default_factory=list, description="3-5 recurring themes from recent coverage")
+    recent_headlines: list[str] = Field(default_factory=list, description="Representative recent headlines")
+    earnings_highlights: list[str] = Field(default_factory=list, description="Key earnings call themes")
+    summary: str = Field(description="2-3 sentence synthesis of market sentiment")
+
+
+# ── Phase 2 expansion schemas ─────────────────────────────────────────────────
+
+class GeopoliticalAnalysis(BaseModel):
+    """Output of GeopoliticalAdvisor: sector-specific geopolitical risk and policy analysis."""
+    sector: str
+    key_policies: list[str] = Field(
+        default_factory=list,
+        description="Named, dated policies with quantified impact. E.g. 'US BIS Oct 2024: restricts AI chips >1800 TFLOPS'"
+    )
+    company_exposures: list[dict] = Field(
+        default_factory=list,
+        description="Per-company exposure. E.g. [{'ticker': 'NVDA', 'exposure': 'high', 'mechanism': 'China revenue ~17% at risk'}]"
+    )
+    geographic_risks: list[str] = Field(default_factory=list)
+    policy_tailwinds: list[str] = Field(default_factory=list, description="Subsidies and industrial policy benefits")
+    tail_risks: list[str] = Field(default_factory=list)
+    summary: str = Field(description="2-3 paragraphs ready to paste into report Section 5 (Geopolitical & Macro)")
+
+
+class SectorAnalysis(BaseModel):
+    """Output of SectorSpecialist: domain expert analysis of sector technology and competitive dynamics."""
+    sector: str
+    specialist_type: str = Field(description="'tech' | 'biomedical' | 'energy' | 'financials' | 'general'")
+    technology_sota: str = Field(description="Current state of the art — what is actually happening in products and research")
+    competitive_dynamics: str = Field(description="Who is winning, how moats are built or eroded")
+    forward_thesis: str = Field(description="What the market is betting on for the next 3-5 years")
+    key_disruptions: list[str] = Field(default_factory=list, description="Emerging threats or structural opportunities")
+    summary: str = Field(description="2-3 paragraphs ready to paste into report Section 4 (Technology & Innovation)")
+
+
+class QAResponse(BaseModel):
+    """Output of QA agent — answer to a user follow-up question or summarize command."""
+    question: str
+    answer: str
+    answer_type: str = Field(default="answer", description="'summary' | 'answer'")
+    artifact_paths: list[str] = Field(default_factory=list)
+    sources_consulted: list[str] = Field(default_factory=list)

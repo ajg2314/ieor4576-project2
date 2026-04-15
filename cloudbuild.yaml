@@ -1,23 +1,38 @@
+substitutions:
+  _REGION: us-central1
+  _SERVICE: sector-analyst
+  _IMG: us-central1-docker.pkg.dev/ieor4576-gu/sector-analyst/app
+
 steps:
+  # Build the container image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/data-analyst-agent', '.']
+    args:
+      - build
+      - --tag=$_IMG:latest
+      - .
 
+  # Push to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/data-analyst-agent']
+    args: ['push', '$_IMG:latest']
 
+  # Deploy to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
       - run
       - deploy
-      - data-analyst-agent
-      - --image=gcr.io/$PROJECT_ID/data-analyst-agent
-      - --region=us-central1
+      - $_SERVICE
+      - --image=$_IMG:latest
+      - --region=$_REGION
       - --platform=managed
       - --allow-unauthenticated
-      - --memory=2Gi
+      - --memory=4Gi
       - --cpu=2
-      - --set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1
+      - --concurrency=2
+      - --min-instances=0
+      - --max-instances=5
+      - --timeout=3600
+      - --set-env-vars=GOOGLE_CLOUD_PROJECT=ieor4576-gu,GOOGLE_CLOUD_LOCATION=$_REGION,GEMINI_MODEL=gemini-2.5-flash,MPLBACKEND=Agg,LITELLM_TELEMETRY=False
 
 images:
-  - 'gcr.io/$PROJECT_ID/data-analyst-agent'
+  - '$_IMG:latest'

@@ -52,6 +52,11 @@ def get_stored_records() -> list[dict]:
         seen[key] = r  # last write wins
     return list(seen.values())
 
+
+def append_to_record_store(records: list[dict]) -> None:
+    """Append records to the module-level store (safe across module boundaries)."""
+    _record_store.extend(records)
+
 # Small rate-limiting delay between requests
 _last_request_time = 0.0
 MIN_INTERVAL = 0.12  # ~8 req/s, safely under 10/s limit
@@ -352,6 +357,31 @@ def get_recent_filing_text(ticker: str, form_type: str = "10-K", section: str = 
     }
 
 
+def _clean_mda_text(text: str) -> str:
+    """Remove common EDGAR boilerplate artifacts from extracted MD&A text.
+
+    Strips:
+    - XBRL inline tags and identifiers (ix:nonnumeric, contextRef=...)
+    - Page number markers (F-1, 1, standalone digits)
+    - Repetitive short fragments that are navigation/table-of-contents artifacts
+    - Sequences of whitespace left after stripping tags
+    """
+    # Remove XBRL contextual attributes that survive HTML stripping
+    text = re.sub(r"\bix:[a-z]+\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bcontextRef\s*=\s*\S+", " ", text)
+    text = re.sub(r"\bunitRef\s*=\s*\S+", " ", text)
+    text = re.sub(r"\bdecimals\s*=\s*\S+", " ", text)
+    # Remove standalone page/exhibit markers: "F-1", "F-2", "Exhibit 99.1", etc.
+    text = re.sub(r"\bExhibit\s+\d+[\.\d]*\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bF-\d+\b", " ", text)
+    # Remove isolated short tokens that are clearly not prose (single chars/digits)
+    lines = [ln for ln in text.split(". ") if len(ln.strip()) > 30]
+    text = ". ".join(lines)
+    # Collapse multiple spaces
+    text = re.sub(r" {3,}", "  ", text)
+    return text.strip()
+
+
 def _extract_mda_section(text: str) -> str:
     """Heuristically extract the MD&A section from filing text."""
     # Common MD&A header patterns
@@ -366,10 +396,18 @@ def _extract_mda_section(text: str) -> str:
 
     match = mda_pattern.search(text)
     if not match:
-        return text[:5000]
+        return _clean_mda_text(text[:5000])
 
     start = match.start()
+    # Skip the first occurrence if it's just the table of contents (short line)
+    # by looking for a second occurrence within 2000 chars
+    toc_end = start + 200
+    second_match = mda_pattern.search(text, toc_end)
+    if second_match and (second_match.start() - start) < 2000:
+        start = second_match.start()
+
     end_match = next_section_pattern.search(text, start + 200)
     end = end_match.start() if end_match else start + 8000
 
-    return text[start:end][:6000]
+    extracted = text[start:end]
+    return _clean_mda_text(extracted)[:6000]

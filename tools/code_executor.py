@@ -48,7 +48,8 @@ def execute_python(code: str) -> dict:
     full_code = preamble + "\n" + code
 
     run_id = uuid.uuid4().hex[:8]
-    script_path = ARTIFACTS_DIR / f"_script_{run_id}.py"
+    # Write to /tmp/ to avoid triggering uvicorn's --reload file watcher
+    script_path = Path("/tmp") / f"_script_{run_id}.py"
     script_path.write_text(full_code)
 
     try:

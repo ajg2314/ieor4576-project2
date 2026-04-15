@@ -4,333 +4,671 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Sector Analyst Agent</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
+    :root {
+      --bg: #080b14;
+      --surface: #0e1220;
+      --surface2: #141828;
+      --border: #1e2338;
+      --border-hover: #2d3355;
+      --accent: #7c3aed;
+      --accent2: #a855f7;
+      --accent-dim: #4c1d95;
+      --glow: rgba(124,58,237,0.15);
+      --glow-strong: rgba(124,58,237,0.3);
+      --text: #e2e8f0;
+      --text-2: #94a3b8;
+      --text-3: #475569;
+      --green: #10b981;
+      --amber: #f59e0b;
+      --red: #ef4444;
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      background: #0f1117; color: #e8eaf0;
+      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg); color: var(--text);
       min-height: 100vh; display: flex; flex-direction: column;
+      font-size: 14px;
     }
 
+    /* ── HEADER ── */
     header {
-      padding: 1.1rem 2rem; border-bottom: 1px solid #1f2235;
-      display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0;
+      padding: 0 1.5rem; height: 52px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      flex-shrink: 0; background: var(--surface);
+      backdrop-filter: blur(8px);
     }
-    header h1 { font-size: 1.1rem; font-weight: 600; color: #a78bfa; }
-    header span {
-      font-size: 0.72rem; color: #6b7280;
-      background: #1a1d2e; padding: 0.2rem 0.6rem; border-radius: 999px;
+    .header-left { display: flex; align-items: center; gap: 0.75rem; }
+    .logo {
+      width: 28px; height: 28px;
+      background: linear-gradient(135deg, var(--accent), #06b6d4);
+      border-radius: 8px; display: flex; align-items: center; justify-content: center;
+      font-size: 14px; font-weight: 800; color: white; flex-shrink: 0;
     }
+    .header-title { font-size: 0.95rem; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+    .header-sub { font-size: 0.72rem; color: var(--text-3); margin-top: 1px; }
+    .header-badges { display: flex; gap: 0.5rem; }
+    .badge {
+      font-size: 0.68rem; font-weight: 600; letter-spacing: 0.04em;
+      padding: 0.2rem 0.6rem; border-radius: 999px;
+      border: 1px solid var(--border); color: var(--text-3);
+      background: var(--surface2);
+    }
+    .badge.live { border-color: #064e3b; color: var(--green); background: rgba(16,185,129,0.08); }
 
+    /* ── LAYOUT ── */
     .layout { display: flex; flex: 1; overflow: hidden; }
 
-    /* ── Main panel ── */
-    .main-panel {
-      flex: 1; display: flex; flex-direction: column;
-      overflow: hidden;
-    }
+    /* ── MAIN PANEL ── */
+    .main-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
 
-    /* Scrollable results area */
     .results-scroll {
-      flex: 1; overflow-y: auto; padding: 1.5rem 2rem;
+      flex: 1; overflow-y: auto; padding: 1.5rem 1.75rem;
       display: flex; flex-direction: column; gap: 1.25rem;
+      scrollbar-width: thin; scrollbar-color: var(--border) transparent;
     }
+    .results-scroll::-webkit-scrollbar { width: 5px; }
+    .results-scroll::-webkit-scrollbar-track { background: transparent; }
+    .results-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
 
-    /* Input area pinned at bottom */
+    /* ── INPUT AREA ── */
     .input-area {
-      border-top: 1px solid #1f2235; padding: 1rem 2rem;
-      display: flex; flex-direction: column; gap: 0.65rem;
-      flex-shrink: 0; background: #0f1117;
+      border-top: 1px solid var(--border); padding: 1rem 1.75rem;
+      flex-shrink: 0; background: var(--surface);
     }
-    .input-row { display: flex; gap: 0.75rem; align-items: flex-end; }
-    textarea {
-      flex: 1; background: #1a1d2e; border: 1px solid #2a2d3a;
-      border-radius: 10px; color: #e8eaf0; font-size: 0.9rem;
-      padding: 0.7rem 1rem; resize: none; min-height: 60px; outline: none;
-      transition: border-color 0.2s; line-height: 1.5;
+    .input-label {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--text-3); margin-bottom: 0.5rem;
     }
-    textarea:focus { border-color: #7c3aed; }
-    textarea::placeholder { color: #4b5563; }
-    button#analyzeBtn {
-      background: #7c3aed; border: none; border-radius: 10px;
-      color: white; cursor: pointer; font-size: 0.9rem; font-weight: 600;
-      padding: 0 1.3rem; height: 44px; white-space: nowrap;
-      transition: background 0.2s;
+    .input-row { display: flex; gap: 0.6rem; align-items: flex-end; }
+    textarea.main-input {
+      flex: 1; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 12px; color: var(--text); font-size: 0.875rem;
+      padding: 0.7rem 1rem; resize: none; min-height: 54px; outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s; line-height: 1.55;
+      font-family: inherit;
     }
-    button#analyzeBtn:hover { background: #6d28d9; }
-    button#analyzeBtn:disabled { background: #2d2d3a; color: #6b7280; cursor: not-allowed; }
-
-    .samples-row { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
-    .samples-label {
-      font-size: 0.7rem; font-weight: 700; letter-spacing: 0.05em;
-      text-transform: uppercase; color: #4b5563; margin-right: 0.25rem;
+    textarea.main-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--glow);
     }
+    textarea.main-input::placeholder { color: var(--text-3); }
+    .analyze-btn {
+      background: linear-gradient(135deg, var(--accent), #9333ea);
+      border: none; border-radius: 12px; color: white;
+      cursor: pointer; font-size: 0.875rem; font-weight: 600;
+      padding: 0 1.25rem; height: 46px; white-space: nowrap;
+      transition: all 0.2s; box-shadow: 0 4px 15px rgba(124,58,237,0.3);
+      font-family: inherit; letter-spacing: -0.01em;
+    }
+    .analyze-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(124,58,237,0.4); }
+    .analyze-btn:active { transform: translateY(0); }
+    .analyze-btn:disabled {
+      background: var(--surface2); color: var(--text-3);
+      cursor: not-allowed; transform: none; box-shadow: none;
+    }
+    .samples-row { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin-top: 0.6rem; }
+    .samples-label { font-size: 0.65rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
     .sample-btn {
-      background: #1a1d2e; border: 1px solid #2a2d3a; border-radius: 6px;
-      color: #6b7280; cursor: pointer; font-size: 0.75rem;
-      padding: 0.3rem 0.65rem; transition: all 0.15s;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text-3); cursor: pointer;
+      font-size: 0.72rem; padding: 0.25rem 0.6rem; transition: all 0.15s;
+      font-family: inherit;
     }
-    .sample-btn:hover { border-color: #7c3aed; color: #c4b5fd; }
+    .sample-btn:hover { border-color: var(--accent); color: #c4b5fd; background: var(--glow); }
 
-    .followup-hint {
-      font-size: 0.75rem; color: #4b5563; padding: 0 0.25rem;
+    /* ── PROGRESS BAR ── */
+    .pipeline-progress {
+      margin-bottom: 10px; padding: 10px 14px;
+      background: rgba(255,255,255,0.03); border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.07);
     }
+    .progress-header { display: flex; justify-content: space-between; margin-bottom: 7px; font-size: 12px; }
+    .step-label { color: #a78bfa; font-weight: 600; }
+    .time-remaining { color: #94a3b8; }
+    .progress-track { height: 5px; background: rgba(255,255,255,0.07); border-radius: 3px; overflow: hidden; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, #7c3aed, #a78bfa);
+                     border-radius: 3px; transition: width 0.6s ease; width: 0%; }
+    .progress-footer { display: flex; justify-content: space-between; margin-top: 5px;
+                       font-size: 11px; color: #64748b; }
 
-    /* Status log */
+    /* ── STATUS LOG ── */
     .status-log {
-      background: #1a1d2e; border: 1px solid #2a2d3a;
-      border-radius: 10px; padding: 0.9rem 1.1rem;
-      display: none; flex-direction: column; gap: 0.3rem;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; overflow: hidden; display: none;
     }
-    .status-log.visible { display: flex; }
-    .status-log-title {
-      font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em;
-      text-transform: uppercase; color: #7c3aed; margin-bottom: 0.2rem;
-    }
-    .status-line {
-      font-size: 0.82rem; color: #6b7280;
+    .status-log.visible { display: block; }
+    .status-log-header {
       display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.7rem 1rem 0.5rem;
+      border-bottom: 1px solid var(--border);
     }
-    .status-line.active { color: #e8eaf0; }
-    .status-line .dot {
-      width: 6px; height: 6px; border-radius: 50%; background: #2d2d3a; flex-shrink: 0;
+    .status-log-title {
+      font-size: 0.65rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--accent2);
     }
-    .status-line.active .dot { background: #7c3aed; animation: pulse 1s infinite; }
-    .status-line.done .dot { background: #10b981; }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    .spinner {
+      width: 10px; height: 10px; border: 2px solid var(--border);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    .spinner.done { border-color: var(--green); animation: none; border-top-color: var(--green); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .status-lines { padding: 0.5rem 1rem 0.75rem; display: flex; flex-direction: column; gap: 0.3rem; }
+    .status-line {
+      display: flex; align-items: center; gap: 0.6rem;
+      font-size: 0.8rem; color: var(--text-3); padding: 0.1rem 0;
+    }
+    .status-line.active { color: var(--text); }
+    .status-line .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--border); flex-shrink: 0; }
+    .status-line.active .dot { background: var(--accent); animation: pulse-dot 1s infinite; }
+    .status-line.done .dot { background: var(--green); }
+    @keyframes pulse-dot { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(0.8)} }
 
-    /* Result session */
-    .session { display: flex; flex-direction: column; gap: 1.1rem; }
-    .session-question {
-      font-size: 0.8rem; font-weight: 600; color: #7c3aed;
-      padding: 0.4rem 0.75rem; background: #1a1d2e;
-      border-radius: 8px; border-left: 3px solid #7c3aed;
+    /* ── SESSIONS ── */
+    .session { display: flex; flex-direction: column; gap: 1rem; }
+    .session-q {
+      display: flex; align-items: center; gap: 0.6rem;
+      font-size: 0.82rem; font-weight: 600; color: #c4b5fd;
+      padding: 0.5rem 0.85rem; border-radius: 10px;
+      background: rgba(124,58,237,0.1); border: 1px solid rgba(124,58,237,0.2);
     }
+    .session-q-icon { color: var(--accent2); font-size: 0.75rem; }
+    .session-divider { border: none; border-top: 1px solid var(--border); margin: 0.5rem 0; }
 
-    /* Cards */
+    /* ── CARDS ── */
     .card {
-      background: #1a1d2e; border: 1px solid #2a2d3a;
-      border-radius: 12px; padding: 1.1rem 1.4rem;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 14px; padding: 1.1rem 1.4rem;
+      transition: border-color 0.2s;
     }
-    .card h2 {
-      font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em;
-      text-transform: uppercase; color: #7c3aed; margin-bottom: 0.65rem;
+    .card:hover { border-color: var(--border-hover); }
+    .card-label {
+      font-size: 0.63rem; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--accent2); margin-bottom: 0.6rem;
+      display: flex; align-items: center; gap: 0.4rem;
     }
-    .card-header-row {
-      display: flex; align-items: baseline; gap: 0.75rem;
-      flex-wrap: wrap; margin-bottom: 0.65rem;
+    .card-label::after {
+      content: ''; flex: 1; height: 1px;
+      background: linear-gradient(to right, var(--border), transparent);
     }
-    .card-header-row h2 { margin-bottom: 0; }
-    .report-title { font-size: 0.95rem; font-weight: 600; color: #f3f4f6; }
 
-    .hypothesis-text { font-size: 1rem; font-weight: 500; line-height: 1.65; color: #f3f4f6; }
-
+    /* Hypothesis card */
+    .hyp-card { border-color: rgba(124,58,237,0.25); }
+    .hyp-header {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 1rem; margin-bottom: 0.75rem; flex-wrap: wrap;
+    }
+    .hyp-title { font-size: 1rem; font-weight: 700; color: var(--text); line-height: 1.4; flex: 1; }
     .confidence-badge {
-      display: inline-block; padding: 0.18rem 0.6rem;
-      border-radius: 999px; font-size: 0.7rem; font-weight: 700;
+      padding: 0.22rem 0.7rem; border-radius: 999px;
+      font-size: 0.68rem; font-weight: 700; flex-shrink: 0;
     }
-    .confidence-high { background: #064e3b; color: #6ee7b7; }
-    .confidence-medium { background: #422006; color: #fbbf24; }
-    .confidence-low { background: #450a0a; color: #fca5a5; }
+    .confidence-high { background: rgba(16,185,129,0.12); color: #34d399; border: 1px solid rgba(16,185,129,0.25); }
+    .confidence-medium { background: rgba(245,158,11,0.12); color: #fbbf24; border: 1px solid rgba(245,158,11,0.25); }
+    .confidence-low { background: rgba(239,68,68,0.12); color: #fca5a5; border: 1px solid rgba(239,68,68,0.25); }
+    .hyp-text { font-size: 0.95rem; line-height: 1.7; color: var(--text); font-weight: 500; }
+    .hyp-meta {
+      margin-top: 0.75rem; display: flex; flex-wrap: wrap; gap: 0.5rem;
+    }
+    .meta-chip {
+      font-size: 0.7rem; color: var(--text-3);
+      background: var(--surface2); border: 1px solid var(--border);
+      padding: 0.2rem 0.6rem; border-radius: 6px;
+    }
+    .meta-chip strong { color: var(--accent2); }
 
-    /* Charts grid */
+    /* Expand full report */
+    .expand-row { margin-top: 0.85rem; padding-top: 0.75rem; border-top: 1px solid var(--border); }
+    .expand-btn {
+      display: inline-flex; align-items: center; gap: 0.45rem;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text-2); cursor: pointer;
+      font-size: 0.78rem; font-weight: 600; padding: 0.4rem 0.9rem;
+      transition: all 0.2s; font-family: inherit;
+    }
+    .expand-btn:hover { border-color: var(--accent); color: #c4b5fd; background: var(--glow); }
+    .expand-btn .icon { font-size: 0.82rem; transition: transform 0.2s; }
+    .expand-btn.open .icon { transform: rotate(90deg); }
+
+    .full-report-panel {
+      display: none; margin-top: 0.85rem;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 1.25rem 1.4rem;
+      max-height: 70vh; overflow-y: auto;
+      scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+    }
+    .full-report-panel.open { display: block; }
+    .full-report-panel::-webkit-scrollbar { width: 5px; }
+    .full-report-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+
+    /* Markdown styles */
+    .md-body { font-size: 0.855rem; line-height: 1.85; color: var(--text-2); }
+    .md-body h1 { font-size: 1.15rem; font-weight: 700; color: var(--text); margin: 1.25rem 0 0.5rem; letter-spacing: -0.02em; }
+    .md-body h2 { font-size: 0.95rem; font-weight: 700; color: var(--text); margin: 1rem 0 0.4rem; border-bottom: 1px solid var(--border); padding-bottom: 0.35rem; }
+    .md-body h3 { font-size: 0.88rem; font-weight: 700; color: #c4b5fd; margin: 0.85rem 0 0.3rem; }
+    .md-body p { margin: 0.5rem 0; }
+    .md-body ul, .md-body ol { margin: 0.4rem 0 0.4rem 1.4rem; }
+    .md-body li { margin: 0.22rem 0; }
+    .md-body table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; font-size: 0.8rem; }
+    .md-body th { background: var(--surface); color: var(--accent2); font-weight: 700; padding: 0.5rem 0.75rem; text-align: left; border: 1px solid var(--border); font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; }
+    .md-body td { padding: 0.45rem 0.75rem; border: 1px solid var(--border); color: var(--text-2); }
+    .md-body tr:nth-child(even) td { background: var(--surface); }
+    .md-body strong { color: var(--text); font-weight: 600; }
+    .md-body em { color: var(--text-3); }
+    .md-body code { background: var(--surface); padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.8rem; color: #c4b5fd; border: 1px solid var(--border); }
+    .md-body blockquote { border-left: 3px solid var(--accent); padding-left: 0.9rem; margin: 0.6rem 0; color: var(--text-3); background: var(--glow); border-radius: 0 6px 6px 0; padding: 0.5rem 0.9rem; }
+    .md-body hr { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
+
+    /* Charts */
     .charts-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 0.9rem;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 0.85rem;
     }
     .chart-item {
-      background: #111320; border: 1px solid #2a2d3a; border-radius: 10px; overflow: hidden;
+      background: #080c14; border: 1px solid var(--border);
+      border-radius: 10px; overflow: hidden; cursor: zoom-in;
+      transition: border-color 0.2s, transform 0.2s;
     }
-    .chart-item img { width: 100%; display: block; cursor: zoom-in; }
-    .chart-item .chart-name {
-      font-size: 0.7rem; color: #4b5563; padding: 0.35rem 0.6rem;
-    }
+    .chart-item:hover { border-color: var(--border-hover); transform: translateY(-2px); }
+    .chart-item img { width: 100%; display: block; }
+    .chart-name { font-size: 0.68rem; color: var(--text-3); padding: 0.35rem 0.6rem; text-transform: capitalize; }
 
     /* Evidence */
-    .evidence-list { display: flex; flex-direction: column; gap: 0.5rem; }
-    .evidence-item {
-      background: #111320; border-left: 3px solid #7c3aed;
-      padding: 0.55rem 0.85rem; border-radius: 0 6px 6px 0;
+    .evidence-grid { display: flex; flex-direction: column; gap: 0.5rem; }
+    .ev-item {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-left: 3px solid var(--accent); border-radius: 0 10px 10px 0;
+      padding: 0.6rem 0.9rem; transition: border-color 0.15s;
     }
-    .evidence-item .claim { font-size: 0.75rem; color: #6b7280; margin-bottom: 0.15rem; }
-    .evidence-item .data-point { font-size: 0.87rem; color: #e8eaf0; font-weight: 600; }
-    .evidence-item .source { font-size: 0.7rem; color: #4b5563; margin-top: 0.15rem; }
+    .ev-item:hover { border-left-color: var(--accent2); }
+    .ev-claim { font-size: 0.73rem; color: var(--text-3); margin-bottom: 0.15rem; }
+    .ev-value { font-size: 0.875rem; color: var(--text); font-weight: 600; line-height: 1.4; }
+    .ev-source { font-size: 0.68rem; color: var(--text-3); margin-top: 0.15rem; }
 
-    .narrative-text {
-      font-size: 0.87rem; line-height: 1.85; color: #d1d5db; white-space: pre-wrap;
-    }
+    /* Narrative */
+    .narrative { font-size: 0.87rem; line-height: 1.85; color: var(--text-2); white-space: pre-wrap; }
 
+    /* Error */
     .error-box {
-      display: none; background: #450a0a; border: 1px solid #7f1d1d;
+      display: none; background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.25);
       border-radius: 10px; padding: 0.85rem 1rem;
-      font-size: 0.84rem; color: #fca5a5; white-space: pre-wrap;
+      font-size: 0.82rem; color: #fca5a5; white-space: pre-wrap; line-height: 1.6;
     }
     .error-box.visible { display: block; }
 
-    /* Divider between sessions */
-    .session-divider {
-      border: none; border-top: 1px solid #1f2235; margin: 0.5rem 0;
+    /* Intro card */
+    .intro-card {
+      background: var(--surface);
+      border: 1px solid var(--border); border-radius: 14px;
+      padding: 1.5rem 1.75rem;
     }
+    .intro-card h2 { font-size: 0.8rem; font-weight: 700; color: var(--accent2); margin-bottom: 0.75rem; letter-spacing: 0.05em; text-transform: uppercase; }
+    .pipeline-steps {
+      display: flex; flex-direction: column; gap: 0.45rem; margin-top: 0.9rem;
+    }
+    .pipeline-step {
+      display: flex; align-items: flex-start; gap: 0.75rem;
+      padding: 0.6rem 0.85rem; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 8px;
+    }
+    .step-num {
+      width: 20px; height: 20px; border-radius: 6px;
+      background: linear-gradient(135deg, var(--accent-dim), var(--accent));
+      color: white; font-size: 0.65rem; font-weight: 800;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .step-text { font-size: 0.8rem; line-height: 1.55; color: var(--text-2); }
+    .step-text strong { color: var(--text); }
 
-    /* ── Artifacts sidebar ── */
-    .artifacts-panel {
-      width: 260px; border-left: 1px solid #1f2235;
-      padding: 1.1rem; overflow-y: auto;
-      display: flex; flex-direction: column; gap: 0.65rem;
+    /* ── Q&A SIDEBAR ── */
+    .qa-sidebar {
+      width: 360px; border-left: 1px solid var(--border);
+      display: flex; flex-direction: column; flex-shrink: 0;
+      background: var(--surface);
+    }
+    .qa-header {
+      padding: 0 1.1rem; height: 52px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
       flex-shrink: 0;
     }
-    .artifacts-panel h2 {
-      font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em;
-      text-transform: uppercase; color: #4b5563;
+    .qa-header-left { display: flex; align-items: center; gap: 0.6rem; }
+    .qa-icon {
+      width: 24px; height: 24px; border-radius: 7px;
+      background: linear-gradient(135deg, #1e1433, #2d1b69);
+      border: 1px solid var(--border); display: flex; align-items: center; justify-content: center;
+      font-size: 0.7rem;
     }
-    .artifact-item {
-      background: #1a1d2e; border: 1px solid #2a2d3a;
-      border-radius: 8px; overflow: hidden;
+    .qa-title { font-size: 0.78rem; font-weight: 700; color: var(--text); }
+    .qa-sub { font-size: 0.65rem; color: var(--text-3); margin-top: 1px; }
+    .qa-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); }
+    .qa-dot.ready { background: var(--green); box-shadow: 0 0 6px rgba(16,185,129,0.5); }
+    .qa-dot.thinking { background: var(--amber); animation: pulse-dot 1s infinite; }
+
+    .qa-messages {
+      flex: 1; overflow-y: auto; padding: 1rem;
+      display: flex; flex-direction: column; gap: 0.85rem;
+      scrollbar-width: thin; scrollbar-color: var(--border) transparent;
     }
-    .artifact-item img { width: 100%; display: block; cursor: zoom-in; }
-    .artifact-item .artifact-name { font-size: 0.7rem; color: #6b7280; padding: 0.35rem 0.6rem; }
-    .artifact-item a {
-      display: block; color: #a78bfa; font-size: 0.78rem;
-      padding: 0.55rem 0.7rem; text-decoration: none;
+    .qa-messages::-webkit-scrollbar { width: 4px; }
+    .qa-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+
+    .qa-empty {
+      margin: auto; text-align: center;
+      display: flex; flex-direction: column; align-items: center; gap: 0.75rem;
     }
-    .artifact-item a:hover { text-decoration: underline; }
-    .empty-artifacts { color: #374151; font-size: 0.8rem; font-style: italic; }
+    .qa-empty-icon { font-size: 2rem; opacity: 0.3; }
+    .qa-empty p { font-size: 0.8rem; color: var(--text-3); line-height: 1.75; max-width: 220px; }
+    .qa-empty-cmds {
+      display: flex; flex-direction: column; gap: 0.3rem; width: 100%;
+    }
+    .qa-empty-cmd {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 7px; padding: 0.4rem 0.65rem;
+      font-size: 0.75rem; color: var(--text-2); text-align: left;
+    }
+    .qa-empty-cmd code { color: var(--accent2); font-family: monospace; }
+
+    /* Chat bubbles */
+    .qa-msg { display: flex; flex-direction: column; gap: 0.18rem; }
+    .qa-role { font-size: 0.63rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; }
+    .qa-msg.user .qa-role { color: var(--accent2); text-align: right; }
+    .qa-msg.agent .qa-role { color: var(--text-3); }
+    .qa-bubble {
+      border-radius: 12px; padding: 0.65rem 0.9rem;
+      font-size: 0.82rem; line-height: 1.7; color: var(--text-2);
+    }
+    .qa-msg.user .qa-bubble {
+      background: linear-gradient(135deg, #1e1433, #1a1040);
+      border: 1px solid rgba(124,58,237,0.35); color: var(--text);
+      align-self: flex-end; max-width: 90%;
+      border-bottom-right-radius: 4px;
+    }
+    .qa-msg.agent .qa-bubble {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-bottom-left-radius: 4px;
+    }
+    .qa-thinking-row {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.5rem 0; font-size: 0.78rem; color: var(--text-3);
+    }
+    .dots { display: flex; gap: 3px; }
+    .dots span {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: var(--text-3); animation: bounce 1.2s infinite;
+    }
+    .dots span:nth-child(2) { animation-delay: 0.2s; }
+    .dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce { 0%,80%,100%{transform:translateY(0)} 40%{transform:translateY(-5px)} }
+
+    /* Q&A input */
+    .qa-input-area {
+      border-top: 1px solid var(--border);
+      padding: 0.75rem 1rem; flex-shrink: 0;
+    }
+    .qa-quick-row {
+      display: flex; flex-wrap: wrap; gap: 0.3rem; margin-bottom: 0.6rem;
+    }
+    .qa-chip {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 6px; color: var(--text-3); cursor: pointer;
+      font-size: 0.68rem; font-weight: 600; padding: 0.22rem 0.55rem;
+      transition: all 0.15s; font-family: inherit;
+    }
+    .qa-chip:hover { border-color: var(--accent); color: #c4b5fd; background: var(--glow); }
+    .qa-chip:disabled { opacity: 0.4; cursor: not-allowed; }
+    .qa-input-row { display: flex; gap: 0.5rem; align-items: flex-end; }
+    textarea.qa-input {
+      flex: 1; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; color: var(--text); font-size: 0.82rem;
+      padding: 0.6rem 0.8rem; resize: none; min-height: 46px; outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s; line-height: 1.5;
+      font-family: inherit;
+    }
+    textarea.qa-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--glow); }
+    textarea.qa-input::placeholder { color: var(--text-3); }
+    textarea.qa-input:disabled { opacity: 0.4; cursor: not-allowed; }
+    .qa-send {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; color: var(--text-3); cursor: pointer;
+      font-size: 1rem; width: 38px; height: 38px; flex-shrink: 0;
+      transition: all 0.2s; display: flex; align-items: center; justify-content: center;
+    }
+    .qa-send:hover:not(:disabled) { border-color: var(--accent); color: var(--accent2); background: var(--glow); }
+    .qa-send:disabled { opacity: 0.35; cursor: not-allowed; }
+    .qa-unavail { font-size: 0.72rem; color: var(--text-3); text-align: center; margin-top: 0.4rem; }
 
     /* Lightbox */
     #lightbox {
-      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85);
-      z-index: 1000; align-items: center; justify-content: center; cursor: zoom-out;
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.92); z-index: 1000;
+      align-items: center; justify-content: center; cursor: zoom-out;
     }
     #lightbox.open { display: flex; }
-    #lightbox img { max-width: 90vw; max-height: 90vh; border-radius: 8px; }
+    #lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+
+    @media (max-width: 1000px) {
+      .qa-sidebar { width: 300px; }
+    }
+    @media (max-width: 760px) {
+      .qa-sidebar { display: none; }
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>Sector Analyst Agent</h1>
-    <span>SEC EDGAR · Collect → EDA → Hypothesize</span>
+    <div class="header-left">
+      <div class="logo">S</div>
+      <div>
+        <div class="header-title">Sector Analyst Agent</div>
+        <div class="header-sub">Multi-agent · SEC EDGAR · Live market data</div>
+      </div>
+    </div>
+    <div class="header-badges">
+      <span class="badge live">● LIVE</span>
+      <span class="badge">Gemini 2.5 Flash</span>
+      <span class="badge">SEC EDGAR XBRL</span>
+    </div>
   </header>
 
   <div class="layout">
-    <!-- Main content -->
+    <!-- Main analysis area -->
     <div class="main-panel">
-
-      <!-- Scrollable results area -->
       <div class="results-scroll" id="resultsScroll">
-
-        <!-- Intro card -->
-        <div class="card" id="introCard">
-          <h2>About this agent</h2>
-          <p style="font-size:0.88rem;line-height:1.75;color:#d1d5db;">
-            This is a <strong style="color:#e8eaf0">multi-agent sector analyst</strong> that retrieves real financial data from
-            <strong style="color:#e8eaf0">SEC EDGAR</strong> — the U.S. Securities and Exchange Commission's public filing database —
-            and performs an automated three-step analysis:
+        <div class="intro-card" id="introCard">
+          <h2>How it works</h2>
+          <p style="font-size:0.84rem;line-height:1.75;color:var(--text-2);">
+            Ask any sector or company question. The system runs a 7-step multi-agent pipeline in real time, fetching real data from SEC EDGAR XBRL filings and live market data.
           </p>
-          <ol style="margin:0.75rem 0 0 1.2rem;font-size:0.87rem;line-height:1.85;color:#9ca3af;display:flex;flex-direction:column;gap:0.25rem;">
-            <li><strong style="color:#a78bfa">Collect</strong> — fetches structured financial data (revenue, income, margins) from XBRL filings and scrapes MD&amp;A sections from 10-K/10-Q documents in real time.</li>
-            <li><strong style="color:#a78bfa">Explore</strong> — computes YoY growth rates, operating margins, and sector comparisons; generates charts using Python executed at runtime.</li>
-            <li><strong style="color:#a78bfa">Hypothesize</strong> — forms a grounded analyst hypothesis with cited evidence and a full memo.</li>
-          </ol>
-          <p style="margin-top:0.75rem;font-size:0.82rem;color:#6b7280;">
-            <strong>Scope:</strong> Public US companies listed on SEC EDGAR. Ask about individual companies (e.g. NVDA, AAPL) or sectors (semiconductors, cloud, social media). Follow-up questions are supported.
-          </p>
+          <div class="pipeline-steps">
+            <div class="pipeline-step">
+              <div class="step-num">1</div>
+              <div class="step-text"><strong>Plan + Peer Discovery</strong> — Identifies 10-18 sector companies and validates them with live market cap data</div>
+            </div>
+            <div class="pipeline-step">
+              <div class="step-num">2</div>
+              <div class="step-text"><strong>5-Way Parallel Research</strong> — Research, Valuation comps, Market Sentiment, Geopolitical Advisor, Sector Specialist all run simultaneously</div>
+            </div>
+            <div class="pipeline-step">
+              <div class="step-num">3</div>
+              <div class="step-text"><strong>SEC EDGAR Collection</strong> — Fetches structured XBRL financial data (revenue, margins, R&D) from 10-K/10-Q filings</div>
+            </div>
+            <div class="pipeline-step">
+              <div class="step-num">4</div>
+              <div class="step-text"><strong>EDA + Hypothesis</strong> — Exploratory analysis with charts, then synthesizes a full analyst report with investment recommendation</div>
+            </div>
+          </div>
         </div>
-
       </div>
 
-      <!-- Input pinned at bottom -->
       <div class="input-area">
+        <div class="input-label">New analysis</div>
         <div class="input-row">
-          <textarea id="question"
-            placeholder="Ask a sector or company question, or ask a follow-up…"
-            rows="2"
-          ></textarea>
-          <button id="analyzeBtn" onclick="analyze()">Analyze</button>
+          <textarea class="main-input" id="question"
+            placeholder="Ask about a sector or company…  e.g. 'Semiconductor sector: NVDA, AMD, INTC competitive dynamics'"
+            rows="2"></textarea>
+          <button class="analyze-btn" id="analyzeBtn" onclick="analyze()">Analyze →</button>
         </div>
         <div class="samples-row">
-          <span class="samples-label">Try:</span>
+          <span class="samples-label">Examples</span>
           <div id="samples"></div>
         </div>
       </div>
     </div>
 
-    <!-- Artifacts sidebar -->
-    <div class="artifacts-panel">
-      <h2>Artifacts</h2>
-      <div id="artifactsList">
-        <div class="empty-artifacts">Charts and reports appear here.</div>
+    <!-- Q&A Sidebar -->
+    <div class="qa-sidebar">
+      <div class="qa-header">
+        <div class="qa-header-left">
+          <div class="qa-icon">💬</div>
+          <div>
+            <div class="qa-title">Q&amp;A Assistant</div>
+            <div class="qa-sub">Ask follow-ups after analysis</div>
+          </div>
+        </div>
+        <div class="qa-dot" id="qaDot" title="Waiting for analysis"></div>
+      </div>
+
+      <div class="qa-messages" id="qaMessages">
+        <div class="qa-empty" id="qaEmpty">
+          <div class="qa-empty-icon">📊</div>
+          <p>Run an analysis first, then ask follow-up questions here.</p>
+          <div class="qa-empty-cmds">
+            <div class="qa-empty-cmd"><code>summarize</code> → 3-page executive summary</div>
+            <div class="qa-empty-cmd"><code>What is the bear case?</code> → targeted answers</div>
+            <div class="qa-empty-cmd"><code>Compare NVDA and AMD margins</code> → deep dives</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="qa-input-area">
+        <div class="qa-quick-row" id="qaChips">
+          <button class="qa-chip" onclick="qaQuick('summarize')" disabled>Summarize</button>
+          <button class="qa-chip" onclick="qaQuick('What is the main investment thesis and recommendation?')" disabled>Thesis</button>
+          <button class="qa-chip" onclick="qaQuick('What are the top 3 risks for this sector?')" disabled>Risks</button>
+          <button class="qa-chip" onclick="qaQuick('Which companies look cheapest on valuation metrics?')" disabled>Valuation</button>
+          <button class="qa-chip" onclick="qaQuick('What is the geopolitical exposure for each company?')" disabled>Geopolitics</button>
+          <button class="qa-chip" onclick="qaQuick('What technology trends will drive growth in the next 3-5 years?')" disabled>Tech trends</button>
+        </div>
+        <div class="qa-input-row">
+          <textarea class="qa-input" id="qaInput"
+            placeholder="Ask a follow-up…" rows="2" disabled></textarea>
+          <button class="qa-send" id="qaSend" onclick="qaAsk()" disabled title="Send (Ctrl+Enter)">↑</button>
+        </div>
+        <div class="qa-unavail" id="qaUnavail">Available after analysis completes</div>
       </div>
     </div>
   </div>
 
-  <!-- Lightbox for full-size charts -->
   <div id="lightbox" onclick="closeLightbox()">
     <img id="lightboxImg" src="" alt=""/>
   </div>
 
   <script>
     const SAMPLES = [
-      "Compare NVDA and AMD margins over 4 years",
-      "Analyze Apple's profitability from SEC filings",
-      "Which hyperscaler grows fastest: MSFT, GOOGL, AMZN?",
-      "Semiconductor sector: NVDA, AMD, INTC, QCOM",
-      "Compare META and SNAP revenue growth",
-      "How has INTC's margin changed vs NVDA since 2020?",
+      "Semiconductor sector: NVDA, AMD, INTC",
+      "Cloud hyperscalers: MSFT, GOOGL, AMZN",
+      "Pharma: LLY, PFE, MRK, ABBV",
+      "Energy: XOM, CVX, OXY, COP",
+      "Big banks: JPM, BAC, GS, MS",
     ];
 
-    const samplesEl = document.getElementById('samples');
-    SAMPLES.forEach(q => {
-      const btn = document.createElement('button');
-      btn.className = 'sample-btn';
-      btn.textContent = q;
-      btn.onclick = () => { document.getElementById('question').value = q; analyze(); };
-      samplesEl.appendChild(btn);
-    });
+    document.getElementById('samples').innerHTML = SAMPLES.map(q =>
+      `<button class="sample-btn" onclick="setSample(this)">${esc(q)}</button>`
+    ).join('');
+    function setSample(btn) {
+      document.getElementById('question').value = btn.textContent;
+      analyze();
+    }
 
-    // Conversation state
-    let priorContext = null;
     let sessionCount = 0;
+    let reportAvailable = false;
+    let latestMdPath = null;
 
+    function esc(s) {
+      return String(s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // Lightbox
     function openLightbox(src) {
       document.getElementById('lightboxImg').src = src;
       document.getElementById('lightbox').classList.add('open');
     }
-    function closeLightbox() {
-      document.getElementById('lightbox').classList.remove('open');
-    }
-    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
+    function closeLightbox() { document.getElementById('lightbox').classList.remove('open'); }
+    document.addEventListener('keydown', e => { if (e.key==='Escape') closeLightbox(); });
 
-    function addStatusLine(container, msg, state = 'active') {
-      container.querySelectorAll('.status-line.active').forEach(el => {
-        el.classList.remove('active'); el.classList.add('done');
+    // Status helpers
+    function addStatus(lines, msg, state='active') {
+      lines.querySelectorAll('.status-line.active').forEach(el => {
+        el.classList.replace('active','done');
       });
-      const line = document.createElement('div');
-      line.className = `status-line ${state}`;
-      line.innerHTML = `<span class="dot"></span><span>${msg}</span>`;
-      container.appendChild(line);
+      const el = document.createElement('div');
+      el.className = `status-line ${state}`;
+      el.innerHTML = `<span class="dot"></span><span>${esc(msg)}</span>`;
+      lines.appendChild(el);
+    }
+    function doneStatus(lines) {
+      lines.querySelectorAll('.status-line.active').forEach(el => el.classList.replace('active','done'));
     }
 
-    function markAllDone(container) {
-      container.querySelectorAll('.status-line.active').forEach(el => {
-        el.classList.remove('active'); el.classList.add('done');
-      });
+    // ── Progress bar helpers ──────────────────────────────────────────────────
+    function formatDuration(secs) {
+      if (secs < 60) return secs + 's';
+      return Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
     }
 
+    function createProgressBar(container) {
+      const bar = document.createElement('div');
+      bar.className = 'pipeline-progress';
+      bar.innerHTML = `
+        <div class="progress-header">
+          <span class="step-label">Starting\u2026</span>
+          <span class="time-remaining"></span>
+        </div>
+        <div class="progress-track"><div class="progress-fill"></div></div>
+        <div class="progress-footer">
+          <span class="prog-elapsed">0s elapsed</span>
+          <span class="prog-steps"></span>
+        </div>`;
+      container.prepend(bar);
+      return {
+        fill:      bar.querySelector('.progress-fill'),
+        stepLabel: bar.querySelector('.step-label'),
+        remaining: bar.querySelector('.time-remaining'),
+        elapsed:   bar.querySelector('.prog-elapsed'),
+        steps:     bar.querySelector('.prog-steps'),
+      };
+    }
+
+    function updateProgressBar(refs, p) {
+      if (!refs || !refs.fill) return;
+      refs.fill.style.width = p.pct + '%';
+      refs.stepLabel.textContent = p.step_name;
+      const rem = p.estimated_remaining_seconds;
+      refs.remaining.textContent =
+        rem > 0 ? '\u2248' + formatDuration(rem) + ' remaining' : 'Finishing\u2026';
+      refs.elapsed.textContent = formatDuration(p.elapsed_seconds) + ' elapsed';
+      refs.steps.textContent = 'Step ' + p.step + ' of ' + p.total_steps;
+    }
+
+    // ── Main analyze ──────────────────────────────────────────────────────────
     async function analyze() {
-      const question = document.getElementById('question').value.trim();
-      if (!question) return;
-
+      const q = document.getElementById('question').value.trim();
+      if (!q) return;
       const btn = document.getElementById('analyzeBtn');
       const scroll = document.getElementById('resultsScroll');
       btn.disabled = true;
-
-      // Clear textarea and hide intro on first use
       document.getElementById('question').value = '';
+
       const intro = document.getElementById('introCard');
       if (intro) intro.style.display = 'none';
 
-      // Add session divider if not first
       if (sessionCount > 0) {
         const hr = document.createElement('hr');
         hr.className = 'session-divider';
@@ -338,194 +676,343 @@
       }
       sessionCount++;
 
-      // Session container
       const session = document.createElement('div');
       session.className = 'session';
 
-      // Question label
-      const qLabel = document.createElement('div');
-      qLabel.className = 'session-question';
-      qLabel.textContent = question;
-      session.appendChild(qLabel);
+      const qEl = document.createElement('div');
+      qEl.className = 'session-q';
+      qEl.innerHTML = `<span class="session-q-icon">◎</span><span>${esc(q)}</span>`;
+      session.appendChild(qEl);
 
       // Status log
-      const statusLog = document.createElement('div');
-      statusLog.className = 'status-log visible';
-      statusLog.innerHTML = '<div class="status-log-title">Pipeline progress</div>';
-      const statusLines = document.createElement('div');
-      statusLog.appendChild(statusLines);
-      session.appendChild(statusLog);
+      const logWrap = document.createElement('div');
+      logWrap.className = 'status-log visible';
 
-      // Error box
-      const errorBox = document.createElement('div');
-      errorBox.className = 'error-box';
-      session.appendChild(errorBox);
+      const logHdr = document.createElement('div');
+      logHdr.className = 'status-log-header';
+      const spinner = document.createElement('div');
+      spinner.className = 'spinner';
+      const logTitle = document.createElement('div');
+      logTitle.className = 'status-log-title';
+      logTitle.textContent = 'Pipeline progress';
+      logHdr.appendChild(spinner);
+      logHdr.appendChild(logTitle);
+      logWrap.appendChild(logHdr);
+
+      const logLines = document.createElement('div');
+      logLines.className = 'status-lines';
+      logWrap.appendChild(logLines);
+      session.appendChild(logWrap);
+
+      const errBox = document.createElement('div');
+      errBox.className = 'error-box';
+      session.appendChild(errBox);
 
       scroll.appendChild(session);
       scroll.scrollTop = scroll.scrollHeight;
+      addStatus(logLines, 'Starting pipeline…');
 
-      addStatusLine(statusLines, 'Starting pipeline…');
+      // Progress bar + live elapsed timer
+      const progRefs = createProgressBar(logWrap);
+      let _elapsedTimer = null;
+      const _t0 = Date.now();
+      _elapsedTimer = setInterval(() => {
+        if (progRefs.elapsed) progRefs.elapsed.textContent = formatDuration(Math.floor((Date.now() - _t0) / 1000)) + ' elapsed';
+      }, 1000);
 
       try {
         const resp = await fetch('/analyze/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question, prior_context: priorContext }),
+          body: JSON.stringify({ question: q }),
         });
-
         if (!resp.ok) {
-          let msg = 'Request failed';
-          try { msg = (await resp.json()).detail || msg; } catch { msg = await resp.text(); }
-          throw new Error(msg);
+          let m = 'Request failed';
+          try { m = (await resp.json()).detail || m; } catch { m = await resp.text(); }
+          throw new Error(m);
         }
 
         const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
+        const dec = new TextDecoder();
+        let buf = '';
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop();
-
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split('\n'); buf = lines.pop();
           for (const line of lines) {
             if (!line.startsWith('data: ')) continue;
-            const event = JSON.parse(line.slice(6));
-
-            if (event.type === 'status') {
-              addStatusLine(statusLines, event.payload);
+            const ev = JSON.parse(line.slice(6));
+            if (ev.type === 'status') {
+              addStatus(logLines, ev.payload);
               scroll.scrollTop = scroll.scrollHeight;
-            } else if (event.type === 'result') {
-              markAllDone(statusLines);
-              renderResult(session, event.payload, question);
-              // Save context for follow-ups
-              priorContext = buildContext(question, event.payload);
-              await loadArtifacts();
+            } else if (ev.type === 'progress') {
+              updateProgressBar(progRefs, ev.payload);
+            } else if (ev.type === 'result') {
+              if (_elapsedTimer) { clearInterval(_elapsedTimer); _elapsedTimer = null; }
+              doneStatus(logLines);
+              spinner.className = 'spinner done';
+              logTitle.textContent = 'Analysis complete';
+              renderResult(session, ev.payload);
+              enableQA();
               scroll.scrollTop = scroll.scrollHeight;
-            } else if (event.type === 'error') {
-              throw new Error(event.payload);
+            } else if (ev.type === 'error') {
+              if (_elapsedTimer) { clearInterval(_elapsedTimer); _elapsedTimer = null; }
+              throw new Error(ev.payload);
             }
           }
         }
-
       } catch (err) {
-        markAllDone(statusLines);
-        addStatusLine(statusLines, 'Pipeline failed.', 'done');
-        errorBox.textContent = `Error: ${err.message}`;
-        errorBox.className = 'error-box visible';
+        if (_elapsedTimer) { clearInterval(_elapsedTimer); _elapsedTimer = null; }
+        doneStatus(logLines);
+        spinner.className = 'spinner done';
+        spinner.style.borderColor = 'var(--red)';
+        errBox.textContent = `Error: ${err.message}`;
+        errBox.className = 'error-box visible';
       } finally {
         btn.disabled = false;
-        document.getElementById('question').placeholder =
-          'Ask a follow-up question, or start a new analysis…';
       }
     }
 
-    function buildContext(question, data) {
-      return (
-        `Question: ${question}\n` +
-        `Hypothesis: ${data.hypothesis}\n` +
-        `Key evidence: ${(data.evidence||[]).map(e => e.data_point).join('; ')}\n` +
-        `Confidence: ${data.confidence}`
-      );
-    }
+    // ── Render result ─────────────────────────────────────────────────────────
+    function renderResult(session, data) {
+      const pngs = [...new Set((data.artifact_paths||[]).filter(p=>p.endsWith('.png')))];
+      const mdFile = (data.artifact_paths||[]).find(p=>p.endsWith('.md'));
+      if (mdFile) latestMdPath = mdFile;
 
-    function renderResult(session, data, question) {
       // Hypothesis card
-      const hypCard = document.createElement('div');
-      hypCard.className = 'card';
-      hypCard.innerHTML = `
-        <div class="card-header-row">
-          <h2>Hypothesis</h2>
-          <span class="report-title">${data.title || ''}</span>
-          <span class="confidence-badge confidence-${data.confidence}">${data.confidence} confidence</span>
-        </div>
-        <div class="hypothesis-text">${data.hypothesis}</div>
-      `;
-      session.appendChild(hypCard);
+      const hc = document.createElement('div');
+      hc.className = 'card hyp-card';
 
-      // Charts card (if any)
-      const pngArtifacts = (data.artifact_paths || []).filter(p => p.endsWith('.png'));
-      if (pngArtifacts.length) {
-        const chartsCard = document.createElement('div');
-        chartsCard.className = 'card';
-        chartsCard.innerHTML = '<h2>Charts</h2>';
+      const conf = data.confidence || 'medium';
+      hc.innerHTML = `
+        <div class="card-label">Investment Hypothesis</div>
+        <div class="hyp-header">
+          <div class="hyp-title">${esc(data.title||'')}</div>
+          <span class="confidence-badge confidence-${conf}">${conf} confidence</span>
+        </div>
+        <div class="hyp-text">${esc(data.hypothesis||'')}</div>
+      `;
+
+      // Meta chips
+      const meta = document.createElement('div');
+      meta.className = 'hyp-meta';
+      if (data.sector) meta.innerHTML += `<span class="meta-chip">Sector: <strong>${esc(data.sector)}</strong></span>`;
+      if (data.companies?.length) {
+        const top = data.companies.slice(0,8).join(', ');
+        const more = data.companies.length > 8 ? ` +${data.companies.length-8} more` : '';
+        meta.innerHTML += `<span class="meta-chip">${esc(top)}${more}</span>`;
+      }
+      hc.appendChild(meta);
+
+      // Expand full report button
+      const expandRow = document.createElement('div');
+      expandRow.className = 'expand-row';
+      const expandBtn = document.createElement('button');
+      expandBtn.className = 'expand-btn';
+      expandBtn.innerHTML = '<span class="icon">▶</span> View Full Report';
+      expandBtn.title = 'Expand the full 5-10 page analyst report';
+
+      const reportPanel = document.createElement('div');
+      reportPanel.className = 'full-report-panel';
+      let loaded = false;
+
+      expandBtn.onclick = async () => {
+        const opening = !reportPanel.classList.contains('open');
+        reportPanel.classList.toggle('open', opening);
+        expandBtn.classList.toggle('open', opening);
+        expandBtn.innerHTML = opening
+          ? '<span class="icon">▼</span> Collapse Report'
+          : '<span class="icon">▶</span> View Full Report';
+
+        if (opening && !loaded) {
+          loaded = true;
+          reportPanel.innerHTML = '<div style="color:var(--text-3);font-size:0.82rem;">Loading report…</div>';
+          try {
+            // Try to fetch the markdown file directly
+            const fileUrl = mdFile || null;
+            let text = '';
+            if (fileUrl) {
+              const r = await fetch(fileUrl);
+              if (r.ok) text = await r.text();
+            }
+            if (!text) {
+              // Fallback: list artifacts and pick latest .md
+              const r2 = await fetch('/api/artifacts/list');
+              const art = await r2.json();
+              const latest = (art.artifacts||[]).find(a=>a.name.endsWith('.md'));
+              if (latest) { const r3 = await fetch(latest.url); if (r3.ok) text = await r3.text(); }
+            }
+            if (text) {
+              reportPanel.innerHTML = '';
+              const d = document.createElement('div');
+              d.className = 'md-body';
+              d.innerHTML = marked.parse(text);
+              reportPanel.appendChild(d);
+            } else {
+              reportPanel.innerHTML = '<div style="color:var(--text-3);">Report file not available.</div>';
+            }
+          } catch (err) {
+            reportPanel.innerHTML = `<div style="color:#fca5a5;font-size:0.82rem;">${esc(err.message)}</div>`;
+          }
+        }
+      };
+
+      expandRow.appendChild(expandBtn);
+      expandRow.appendChild(reportPanel);
+      hc.appendChild(expandRow);
+      session.appendChild(hc);
+
+      // Charts card
+      if (pngs.length) {
+        const cc = document.createElement('div');
+        cc.className = 'card';
+        cc.innerHTML = '<div class="card-label">Charts</div>';
         const grid = document.createElement('div');
         grid.className = 'charts-grid';
-        pngArtifacts.forEach(path => {
+        pngs.forEach(p => {
+          const name = p.split('/').pop().replace(/[_-]/g,' ').replace(/\.\w+$/,'').replace(/\b\w/g,c=>c.toUpperCase());
           const item = document.createElement('div');
           item.className = 'chart-item';
-          const name = path.split('/').pop();
-          item.innerHTML = `
-            <img src="${path}" alt="${name}" onclick="openLightbox('${path}')"/>
-            <div class="chart-name">${name}</div>
-          `;
+          item.onclick = () => openLightbox(p);
+          item.innerHTML = `<img src="${esc(p)}" alt="${esc(name)}" loading="lazy"/><div class="chart-name">${esc(name)}</div>`;
           grid.appendChild(item);
         });
-        chartsCard.appendChild(grid);
-        session.appendChild(chartsCard);
+        cc.appendChild(grid);
+        session.appendChild(cc);
       }
 
       // Evidence card
-      if (data.evidence && data.evidence.length) {
-        const evCard = document.createElement('div');
-        evCard.className = 'card';
-        evCard.innerHTML = '<h2>Evidence</h2>';
-        const list = document.createElement('div');
-        list.className = 'evidence-list';
+      if (data.evidence?.length) {
+        const ec = document.createElement('div');
+        ec.className = 'card';
+        ec.innerHTML = '<div class="card-label">Key Evidence</div>';
+        const grid = document.createElement('div');
+        grid.className = 'evidence-grid';
         for (const e of data.evidence) {
           const item = document.createElement('div');
-          item.className = 'evidence-item';
-          item.innerHTML = `
-            <div class="claim">${e.claim}</div>
-            <div class="data-point">${e.data_point}</div>
-            <div class="source">Source: ${e.source}</div>
-          `;
-          list.appendChild(item);
+          item.className = 'ev-item';
+          item.innerHTML = `<div class="ev-claim">${esc(e.claim)}</div><div class="ev-value">${esc(e.data_point)}</div><div class="ev-source">Source: ${esc(e.source)}</div>`;
+          grid.appendChild(item);
         }
-        evCard.appendChild(list);
-        session.appendChild(evCard);
+        ec.appendChild(grid);
+        session.appendChild(ec);
       }
 
-      // Full analysis card
-      const narCard = document.createElement('div');
-      narCard.className = 'card';
-      narCard.innerHTML = `<h2>Full Analysis</h2><div class="narrative-text">${data.narrative}</div>`;
-      session.appendChild(narCard);
+      // Narrative / summary
+      if (data.narrative) {
+        const nc = document.createElement('div');
+        nc.className = 'card';
+        nc.innerHTML = `<div class="card-label">Investment Summary</div><div class="narrative">${esc(data.narrative)}</div>`;
+        session.appendChild(nc);
+      }
     }
 
-    async function loadArtifacts() {
+    // ── Enable Q&A ────────────────────────────────────────────────────────────
+    function enableQA() {
+      reportAvailable = true;
+      document.getElementById('qaInput').disabled = false;
+      document.getElementById('qaSend').disabled = false;
+      document.getElementById('qaUnavail').style.display = 'none';
+      document.getElementById('qaEmpty').style.display = 'none';
+      document.getElementById('qaDot').className = 'qa-dot ready';
+      document.getElementById('qaDot').title = 'Report ready — ask follow-up questions';
+      document.querySelectorAll('.qa-chip').forEach(b => b.disabled = false);
+    }
+
+    // ── Q&A Chat ──────────────────────────────────────────────────────────────
+    function qaQuick(q) {
+      if (!reportAvailable) return;
+      document.getElementById('qaInput').value = q;
+      qaAsk();
+    }
+
+    async function qaAsk() {
+      if (!reportAvailable) return;
+      const input = document.getElementById('qaInput');
+      const sendBtn = document.getElementById('qaSend');
+      const q = input.value.trim();
+      if (!q) return;
+
+      input.value = '';
+      input.disabled = true;
+      sendBtn.disabled = true;
+      document.getElementById('qaDot').className = 'qa-dot thinking';
+
+      const msgs = document.getElementById('qaMessages');
+
+      // User bubble
+      const userEl = document.createElement('div');
+      userEl.className = 'qa-msg user';
+      userEl.innerHTML = `<div class="qa-role">You</div><div class="qa-bubble">${esc(q)}</div>`;
+      msgs.appendChild(userEl);
+
+      // Thinking
+      const thinkEl = document.createElement('div');
+      thinkEl.className = 'qa-thinking-row';
+      thinkEl.innerHTML = `<div class="dots"><span></span><span></span><span></span></div><span>Analyst is thinking…</span>`;
+      msgs.appendChild(thinkEl);
+      msgs.scrollTop = msgs.scrollHeight;
+
       try {
-        const res = await fetch('/api/artifacts/list');
-        const data = await res.json();
-        const container = document.getElementById('artifactsList');
-        container.innerHTML = '';
-        if (!data.artifacts.length) {
-          container.innerHTML = '<div class="empty-artifacts">No artifacts yet.</div>';
-          return;
-        }
-        for (const a of data.artifacts) {
-          const div = document.createElement('div');
-          div.className = 'artifact-item';
-          if (a.name.endsWith('.png')) {
-            div.innerHTML = `
-              <img src="${a.url}" alt="${a.name}" onclick="openLightbox('${a.url}')"/>
-              <div class="artifact-name">${a.name}</div>
-            `;
-          } else {
-            div.innerHTML = `<a href="${a.url}" target="_blank">${a.name}</a>`;
+        const body = { question: q };
+        if (latestMdPath) body.report_path = latestMdPath.replace('/files/','artifacts/');
+
+        const resp = await fetch('/qa/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        const reader = resp.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '', answer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split('\n'); buf = lines.pop();
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const ev = JSON.parse(line.slice(6));
+              if (ev.type === 'qa_result') answer = ev.payload.answer || '';
+              else if (ev.type === 'error') throw new Error(ev.payload);
+            } catch (e) { if (!line.includes('data: ')) throw e; }
           }
-          container.appendChild(div);
         }
-      } catch { /* non-critical */ }
+
+        thinkEl.remove();
+        const agentEl = document.createElement('div');
+        agentEl.className = 'qa-msg agent';
+        const bubble = document.createElement('div');
+        bubble.className = 'qa-bubble md-body';
+        bubble.innerHTML = marked.parse(answer || '*(No response)*');
+        agentEl.innerHTML = '<div class="qa-role">Analyst</div>';
+        agentEl.appendChild(bubble);
+        msgs.appendChild(agentEl);
+
+      } catch (err) {
+        thinkEl.remove();
+        const errEl = document.createElement('div');
+        errEl.className = 'qa-msg agent';
+        errEl.innerHTML = `<div class="qa-role">Error</div><div class="qa-bubble" style="color:#fca5a5">${esc(err.message)}</div>`;
+        msgs.appendChild(errEl);
+      } finally {
+        input.disabled = false;
+        sendBtn.disabled = false;
+        document.getElementById('qaDot').className = 'qa-dot ready';
+        msgs.scrollTop = msgs.scrollHeight;
+        input.focus();
+      }
     }
 
     document.getElementById('question').addEventListener('keydown', e => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) analyze();
+      if (e.key==='Enter' && (e.ctrlKey||e.metaKey)) analyze();
     });
-
-    loadArtifacts();
+    document.getElementById('qaInput').addEventListener('keydown', e => {
+      if (e.key==='Enter' && (e.ctrlKey||e.metaKey)) qaAsk();
+    });
   </script>
 </body>
 </html>

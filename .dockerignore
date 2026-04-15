@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Dev / local
+.env
+.env.*
+*.log
+.git/
+.gitignore
+.DS_Store
+
+# Generated artifacts (ephemeral — generated at runtime on Cloud Run)
+artifacts/*.png
+artifacts/*.csv
+artifacts/report_*.md
+
+# Tests and CI
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Large files
+*.hprof
+
+# EDA scratch database (rebuilt at runtime)
+eda.db

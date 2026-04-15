@@ -20,7 +20,9 @@ from tools.sec_edgar import (
     get_company_financials,
     get_sector_financials,
     get_recent_filing_text,
+    append_to_record_store,
 )
+from tools.market_data import get_company_financials_yf as _get_yf_financials
 from models.schemas import DataBundle
 
 LITELLM_MODEL_ID = f"vertex_ai/{os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')}"
@@ -48,12 +50,24 @@ RETRIEVAL METHOD 1 — EDGAR XBRL Structured Financial Data:
 RETRIEVAL METHOD 2 — Filing Text Scraping (MD&A):
 - Use `fetch_filing_text` for the FIRST company in the ticker list to get qualitative
   context: guidance, risk factors, segment commentary.
+- Fetch BOTH the most recent 10-K (annual) AND the most recent 10-Q (quarterly) for
+  the first ticker. The 10-Q has more recent management commentary and forward guidance.
 
 PROCESS:
 1. Read the tickers and focus_metrics from the research brief.
 2. Call `fetch_sector_financials` with all tickers and focus_metrics.
-3. Call `fetch_filing_text` for the first ticker (10-K).
-4. Output the DataBundle metadata — do NOT include any records in the JSON.
+3. For any ticker where `fetch_sector_financials` returns 0 records (common for European-listed
+   companies such as DNNGY, VWDRY, SMEGF, or any OTC pink-sheet ADR), immediately call
+   `fetch_company_financials_yf` for that ticker as a fallback.
+4. Call `fetch_filing_text` for the first ticker with form_type="10-K" (annual report).
+5. Call `fetch_filing_text` for the first ticker with form_type="10-Q" (most recent quarter).
+6. Output the DataBundle metadata — do NOT include any records in the JSON.
+
+FALLBACK FOR NON-US / NON-EDGAR COMPANIES:
+If `fetch_sector_financials` or `fetch_company_financials` returns 0 records for a ticker
+(common for European-listed companies like DNNGY, VWDRY, SMEGF, or any OTC pink-sheet ADR),
+immediately call `fetch_company_financials_yf` for that ticker. It covers international
+stocks with the same data schema. Always try EDGAR first; use yfinance only as fallback.
 
 IMPORTANT — records field:
 - Leave "records" as an empty array [].
@@ -65,7 +79,7 @@ OUTPUT FORMAT: Your final response must be a single JSON object. No other text.
   "source": "SEC EDGAR XBRL API",
   "retrieval_method": "api",
   "records": [],
-  "metadata": {"companies": [...tickers fetched...], "concepts": [...metrics...], "mda_summary": "..."},
+  "metadata": {"companies": [...tickers fetched...], "concepts": [...metrics...], "mda_summary": "...(10-K + 10-Q combined)"},
   "summary": "<what was retrieved: company names, metrics, date range>"
 }
 IMPORTANT: After all tool calls are complete, you MUST send one final text message
@@ -109,10 +123,33 @@ def fetch_filing_text(ticker: str, form_type: str = "10-K") -> dict:
     return get_recent_filing_text(ticker, form_type)
 
 
+@function_tool(strict_mode=False)
+def fetch_company_financials_yf(ticker: str) -> dict:
+    """Fetch annual income statement data via yfinance — use as fallback for non-EDGAR companies.
+
+    Use this when fetch_company_financials() or fetch_sector_financials() returns 0 records
+    (e.g. European-listed companies like DNNGY, VWDRY, SMEGF). Returns same flat_records
+    schema as EDGAR so the EDA agent can load them into SQLite without any changes.
+    """
+    result = _get_yf_financials(ticker)
+    records = result.get("flat_records", [])
+    append_to_record_store(records)  # same side-channel as SEC EDGAR tools
+    return {
+        "ticker": ticker,
+        "company_name": result.get("company_name", ticker),
+        "records_fetched": len(records),
+        "source": "yfinance",
+        "error": result.get("error"),
+    }
+
+
 def build_collector_agent() -> Agent:
     return Agent(
         name="Collector",
         model=_make_model(),
         instructions=COLLECTOR_PROMPT,
-        tools=[lookup_ticker, fetch_company_financials, fetch_sector_financials, fetch_filing_text],
+        tools=[
+            lookup_ticker, fetch_company_financials, fetch_sector_financials,
+            fetch_filing_text, fetch_company_financials_yf,
+        ],
     )

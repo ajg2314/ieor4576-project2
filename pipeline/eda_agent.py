@@ -18,7 +18,7 @@ DB schema (table: financials):
     company      TEXT   — full company name
     period       TEXT   — ISO date of period end, e.g. "2023-01-29"
     fiscal_year  TEXT   — 4-digit year, e.g. "2023"
-    form         TEXT   — "10-K" or "10-Q"
+    form         TEXT   — "10-K" (annual SEC filing), "10-Q" (quarterly SEC), or "yfinance-annual" (non-US annual via yfinance — treat same as "10-K" for annual comparisons)
     metric       TEXT   — e.g. "revenue", "operating_income"
     value        REAL   — raw value in dollars
     value_billions REAL — value / 1e9, rounded to 3 dp
@@ -33,26 +33,45 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from contextvars import ContextVar
 from agents import Agent, function_tool
 from agents.extensions.models.litellm_model import LitellmModel
 
 from tools.statistics import compute_statistics, group_and_filter
 from tools.code_executor import execute_python, ARTIFACTS_DIR
 from tools.visualizer import line_chart, bar_chart, waterfall_chart
+from tools.rag_store import retrieve_eda_playbook
 
 LITELLM_MODEL_ID = f"vertex_ai/{os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')}"
 
 # ── Data store paths ───────────────────────────────────────────────────────────
 
-_EDA_DB_FILE: str = str(ARTIFACTS_DIR / "eda.db")
+# ContextVar ensures each asyncio Task (= each HTTP request) gets its own DB path,
+# preventing cross-run contamination even when multiple analyses run concurrently.
+_EDA_DB_FILE_VAR: ContextVar[str] = ContextVar(
+    "_EDA_DB_FILE", default=str(ARTIFACTS_DIR / "eda.db")
+)
 _EDA_DATA_SUMMARY: str = ""
 _eda_observations: list[dict] = []
+
+
+def set_eda_db_path(path: str) -> None:
+    """Set the per-run EDA database path for the current asyncio task context.
+
+    Uses ContextVar so concurrent pipeline runs each get an isolated DB path
+    without interfering with each other.
+    """
+    _EDA_DB_FILE_VAR.set(path)
+
+
+def _get_db_file() -> str:
+    return _EDA_DB_FILE_VAR.get()
 
 
 # ── DB helpers ─────────────────────────────────────────────────────────────────
 
 def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(_EDA_DB_FILE)
+    conn = sqlite3.connect(_get_db_file())
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -64,7 +83,7 @@ def load_eda_db(all_records: list[dict]) -> None:
     This is called with the full uncompacted record set so the agent
     has access to quarterly data and full history via SQL.
     """
-    conn = sqlite3.connect(_EDA_DB_FILE)
+    conn = sqlite3.connect(_get_db_file())
     conn.execute("DROP TABLE IF EXISTS financials")
     conn.execute("""
         CREATE TABLE financials (
@@ -101,11 +120,14 @@ def load_eda_db(all_records: list[dict]) -> None:
 def _build_series(metric: str, form: str = "10-K") -> dict[str, dict[str, float]]:
     """Build {ticker: {fiscal_year: value_billions}} for auto-charts."""
     conn = _get_conn()
+    # Include yfinance-annual alongside 10-K for annual comparisons
+    forms = (form, "yfinance-annual") if form == "10-K" else (form,)
+    placeholders = ",".join("?" * len(forms))
     rows = conn.execute(
-        "SELECT ticker, fiscal_year, value_billions FROM financials "
-        "WHERE metric=? AND form=? AND value_billions IS NOT NULL "
-        "ORDER BY fiscal_year",
-        (metric, form),
+        f"SELECT ticker, fiscal_year, value_billions FROM financials "
+        f"WHERE metric=? AND form IN ({placeholders}) AND value_billions IS NOT NULL "
+        f"ORDER BY fiscal_year",
+        (metric, *forms),
     ).fetchall()
     conn.close()
     series: dict[str, dict[str, float]] = {}
@@ -184,11 +206,11 @@ def load_eda_data(compact_records: list[dict]) -> str:
     metrics = [r[0] for r in conn.execute(
         "SELECT DISTINCT metric FROM financials ORDER BY metric").fetchall()]
     years = [r[0] for r in conn.execute(
-        "SELECT DISTINCT fiscal_year FROM financials WHERE form='10-K' "
+        "SELECT DISTINCT fiscal_year FROM financials WHERE form IN ('10-K', 'yfinance-annual') "
         "ORDER BY fiscal_year").fetchall()]
     total = conn.execute("SELECT COUNT(*) FROM financials").fetchone()[0]
     annual = conn.execute(
-        "SELECT COUNT(*) FROM financials WHERE form='10-K'").fetchone()[0]
+        "SELECT COUNT(*) FROM financials WHERE form IN ('10-K', 'yfinance-annual')").fetchone()[0]
     conn.close()
 
     # Auto-generate standard charts; seed observation store
@@ -229,21 +251,43 @@ The financial data is in a SQLite database. Standard charts are already generate
 Your job: run deeper analysis, compute growth rates / margins / regressions,
 and generate additional charts.
 
+STEP 0 — Always call get_analysis_guidance(sector, question) first. It returns
+sector-specific guidance on what to compute, pitfalls to avoid, and how to
+interpret common patterns like sudden revenue spikes or multi-year share loss.
+
+━━ CRITICAL: RECENCY AND GROWTH MATTER MORE THAN AVERAGES ━━━━━━━━━━━━━━━━━━━
+
+NEVER rank companies by average revenue across all years. A company with 7 years of
+history at $10B looks worse than a high-growth newcomer that just hit $60B.
+ALWAYS anchor analysis on the MOST RECENT fiscal year AND the growth trajectory.
+
+For example, in semiconductors, NVIDIA's revenue in its most recent fiscal year
+(~$130B) now far exceeds Intel's (~$54B). But if you average 7 years of history,
+Intel looks larger. That conclusion would be wrong and misleading.
+
+PREFERRED analysis pattern:
+  1. Show the MOST RECENT year ranking (who is largest RIGHT NOW)
+  2. Show the revenue GROWTH TRAJECTORY (CAGR or YoY %)
+  3. Only then discuss historical context or averages
+
 ━━ DATA ACCESS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 DB table: financials
 Columns: ticker, company, period, fiscal_year, form, metric, value, value_billions
-form values: '10-K' (annual) or '10-Q' (quarterly)
+form values: '10-K' (annual SEC filing), '10-Q' (quarterly SEC), 'yfinance-annual' (non-US annual via yfinance — treat same as '10-K' for annual comparisons)
 metric values: revenue, net_income, operating_income, gross_profit, rd_expense, ...
 
 Example queries:
+  -- Most recent year ranking (use this, not AVG)
+  SELECT ticker, fiscal_year, value_billions
+  FROM financials WHERE metric='revenue' AND form='10-K'
+  AND fiscal_year = (SELECT MAX(fiscal_year) FROM financials WHERE form='10-K')
+  ORDER BY value_billions DESC
+
+  -- Revenue trend per company
   SELECT ticker, fiscal_year, value_billions
   FROM financials WHERE metric='revenue' AND form='10-K'
   ORDER BY ticker, fiscal_year
-
-  SELECT ticker, AVG(value_billions) as avg_rev
-  FROM financials WHERE metric='revenue' AND form='10-K'
-  GROUP BY ticker ORDER BY avg_rev DESC
 
 ━━ TOOLS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -276,15 +320,17 @@ Example queries:
 ━━ ANALYSIS PLAN ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Work through as many of these as the data supports:
-□ sql_query: rank companies by average revenue
-□ sql_query: find which company has the highest revenue CAGR
-□ run_python: compute YoY revenue growth % per company; print a table
-□ run_python: linear regression of revenue vs year for each company (slope = growth trend)
-□ run_python: compute correlation matrix across metrics
+□ sql_query: rank companies by MOST RECENT fiscal year revenue (not AVG)
+□ run_python: compute YoY revenue growth % per company; print a table — identify
+   the fastest-growing companies, even if they're not the largest historically
+□ run_python: compute 3-year and 5-year revenue CAGR per company
+□ run_python: linear regression of revenue vs year — slope shows momentum direction
 □ plot_metric("rd_expense") if R&D data is available
 □ plot_margins("rd_expense", "revenue", "R&D Intensity %")
 □ plot_margins("net_income", "revenue", "Net Margin %")
-□ Identify the single biggest outlier vs peers
+□ create_chart: bar chart of most recent year revenue, ranking current scale
+□ Identify the biggest outlier vs peers — especially high-growth companies that
+   look small historically but are now dominant
 
 Make all your tool calls. You do not need to write any final message.
 """
@@ -333,7 +379,7 @@ def run_python(code: str) -> dict:
         "    from sklearn.linear_model import LinearRegression\n"
         "except ImportError:\n"
         "    pass\n"
-        f"conn = sqlite3.connect({repr(_EDA_DB_FILE)})\n"
+        f"conn = sqlite3.connect({repr(_get_db_file())})\n"
         "df = pd.read_sql(\"SELECT * FROM financials\", conn)\n"
         "conn.close()\n"
     )
@@ -440,6 +486,29 @@ def create_chart(
     return path
 
 
+# ── RAG guidance tool ─────────────────────────────────────────────────────────
+
+@function_tool(strict_mode=False)
+def get_analysis_guidance(sector: str, question: str) -> str:
+    """Retrieve EDA playbook guidance from the knowledge base.
+
+    Call this FIRST before deciding what to compute. Returns recommended analysis
+    patterns, metrics to prioritise, common pitfalls (e.g. never use average revenue),
+    and sector-specific interpretation tips.
+
+    Args:
+        sector: Sector name (e.g. 'semiconductors', 'cloud software')
+        question: The analytical question being answered
+
+    Returns:
+        Guidance on which analyses to run and how to interpret the data
+    """
+    result = retrieve_eda_playbook(sector, question)
+    if not result:
+        return "No specific guidance found — follow the analysis plan in your instructions."
+    return f"=== EDA ANALYSIS GUIDANCE ===\n\n{result}"
+
+
 # ── Agent builder ─────────────────────────────────────────────────────────────
 
 def build_eda_agent() -> Agent:
@@ -447,5 +516,5 @@ def build_eda_agent() -> Agent:
         name="EDA",
         model=_make_model(),
         instructions=EDA_PROMPT,
-        tools=[sql_query, run_python, plot_metric, plot_margins, create_chart],
+        tools=[get_analysis_guidance, sql_query, run_python, plot_metric, plot_margins, create_chart],
     )
