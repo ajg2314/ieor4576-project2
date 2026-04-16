@@ -12,7 +12,7 @@ Example questions:
 
 ## Live Demo
 
-> Deployed on Google Cloud Run — link TBD after deployment.
+> Deployed on Google Cloud Run — https://sectoranalystfinal-558700534812.us-central1.run.app/.
 
 ---
 
