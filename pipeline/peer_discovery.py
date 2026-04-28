@@ -29,10 +29,16 @@ MIN_MARKET_CAP_B = 1.0  # Filter: exclude companies below $1B market cap
 MAX_PEERS = 12           # Cap to avoid Gemini rate limits during SEC collection
 
 
+YFINANCE_TIMEOUT = 15  # seconds — Yahoo Finance often hangs on cloud provider IPs
+
+
 async def _fetch_one(ticker: str) -> PeerInfo:
     """Fetch yfinance info for one ticker in a thread pool (blocking → async)."""
     try:
-        data = await asyncio.to_thread(get_stock_info, ticker)
+        data = await asyncio.wait_for(
+            asyncio.to_thread(get_stock_info, ticker),
+            timeout=YFINANCE_TIMEOUT,
+        )
         market_cap_b = data.get("market_cap_b")
         valid = market_cap_b is not None and market_cap_b >= MIN_MARKET_CAP_B
         return PeerInfo(
@@ -43,6 +49,9 @@ async def _fetch_one(ticker: str) -> PeerInfo:
             industry=data.get("industry") or "",
             valid=valid,
         )
+    except asyncio.TimeoutError:
+        logger.warning("Peer discovery timed out for %s (yfinance blocked or slow)", ticker)
+        return PeerInfo(ticker=ticker, valid=False)
     except Exception as exc:
         logger.warning("Peer discovery failed for %s: %s", ticker, exc)
         return PeerInfo(ticker=ticker, valid=False)

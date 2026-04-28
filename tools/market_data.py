@@ -46,19 +46,28 @@ def clear_market_data_observations() -> None:
 
 # ── Core data fetching ────────────────────────────────────────────────────────
 
+_YFINANCE_TIMEOUT = 12  # seconds — cloud provider IPs often get throttled by Yahoo Finance
+
+
 def _fetch_ticker_info(ticker: str) -> dict:
     """Fetch yfinance .info dict with in-memory cache. Returns {} on any failure.
 
     yfinance is imported lazily here so the module can be imported even when
     yfinance is not installed (e.g. during test collection).
     """
+    import socket
     ticker = ticker.upper()
     if ticker in _info_cache:
         return _info_cache[ticker]
     try:
         import yfinance as yf  # noqa: PLC0415 — lazy import intentional
-        t = yf.Ticker(ticker)
-        info = t.info or {}
+        old_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(_YFINANCE_TIMEOUT)
+        try:
+            t = yf.Ticker(ticker)
+            info = t.info or {}
+        finally:
+            socket.setdefaulttimeout(old_timeout)
         _info_cache[ticker] = info
         return info
     except Exception as exc:
