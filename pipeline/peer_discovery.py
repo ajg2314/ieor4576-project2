@@ -26,7 +26,7 @@ from tools.market_data import get_stock_info
 logger = logging.getLogger(__name__)
 
 MIN_MARKET_CAP_B = 1.0  # Filter: exclude companies below $1B market cap
-MAX_PEERS = 12           # Cap to avoid Gemini rate limits during SEC collection
+MAX_PEERS = 6            # Cap to avoid Gemini rate limits during SEC collection
 
 
 YFINANCE_TIMEOUT = 15  # seconds — Yahoo Finance often hangs on cloud provider IPs

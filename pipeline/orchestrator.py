@@ -73,20 +73,20 @@ def get_last_run_context() -> dict:
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
-MAX_REFINEMENT_LOOPS = 2
+MAX_REFINEMENT_LOOPS = 1
 RATE_LIMIT_MAX_WAIT = 60      # cap per-retry wait at 60 seconds
 RATE_LIMIT_INITIAL_WAIT = 15  # first wait before retry
 INTER_STEP_DELAY = 3          # seconds between pipeline steps to reduce burst
 
 # Maximum annual fiscal years to pass to the EDA agent (keeps context manageable)
-EDA_MAX_YEARS = 7
+EDA_MAX_YEARS = 4
 
 # ── LiteLLM burst throttle ────────────────────────────────────────────────────
 # Limits concurrent in-flight litellm.acompletion() calls across ALL agents.
 # Vertex AI free tier: ~2 RPS burst → keep MAX_CONCURRENT_LLM_CALLS ≤ 4.
 # Raise MAX_CONCURRENT_LLM_CALLS / lower MIN_REQUEST_INTERVAL on paid tiers.
-MAX_CONCURRENT_LLM_CALLS = 4   # max simultaneous API calls in flight
-MIN_REQUEST_INTERVAL    = 0.35  # minimum seconds between successive dispatches
+MAX_CONCURRENT_LLM_CALLS = 2   # max simultaneous API calls in flight
+MIN_REQUEST_INTERVAL    = 1.0   # minimum seconds between successive dispatches
 
 # Lazily created inside the event loop (asyncio objects can't be created at import time)
 _llm_semaphore: asyncio.Semaphore | None = None
@@ -652,7 +652,6 @@ async def run_analysis_with_status(
 
     planner = build_planner_agent()
     researcher = build_researcher_agent()
-    collector = build_collector_agent()
     eda_agent = build_eda_agent()
 
     # Prepend prior conversation context for follow-up questions
@@ -842,36 +841,62 @@ async def run_analysis_with_status(
     logger.info("STEP_TIMING step=3 name=ParallelResearch elapsed=%.1f", time.perf_counter() - _t0)
     await asyncio.sleep(INTER_STEP_DELAY)
 
-    # ── Step 2: Collect ───────────────────────────────────────────────────
+    # ── Step 4: Collect (deterministic — no LLM) ──────────────────────────
+    # Bypasses the Collector LLM agent. The collector's job is pure data fetching
+    # (the Planner already chose the tickers), so we call the same SEC tools
+    # directly. Saves ~8 LLM calls and ~50K tokens of growing context that
+    # otherwise blow past Vertex AI's per-minute token quota.
     yield _progress(4, "Fetching SEC EDGAR financial data")
     yield "status", f"Step 4/7 — Fetching SEC EDGAR data for {len(plan.tickers)} companies..."
 
-    collector_brief = (
-        f"Research brief from Planner:\n"
-        f"Sector: {plan.sector}\n"
-        f"Question: {plan.expanded_query}\n"
-        f"Tickers to fetch (ALL of them): {json.dumps(plan.tickers)}\n"
-        f"Focus metrics: {json.dumps(plan.focus_metrics)}\n\n"
-        f"Original user question: {full_question}"
-    )
+    from tools.sec_edgar import get_sector_financials, get_recent_filing_text, append_to_record_store
+    from tools.market_data import get_company_financials_yf
 
     clear_record_store()
-    data_bundle = await _run_agent(collector, collector_brief, DataBundle, _status_sink=rate_sink)
-    for msg in _drain(rate_sink):
-        yield "status", msg
+    concepts = plan.focus_metrics or [
+        "revenue", "net_income", "operating_income", "gross_profit", "rd_expense",
+    ]
+    sector_result = await asyncio.to_thread(get_sector_financials, plan.tickers, concepts)
+
+    # yfinance fallback for any ticker EDGAR returned 0 records for
+    edgar_records = get_stored_records()
+    found_tickers = {r.get("ticker") for r in edgar_records}
+    missing = [t for t in plan.tickers if t not in found_tickers]
+    for t in missing:
+        try:
+            yf_result = await asyncio.to_thread(get_company_financials_yf, t)
+            yf_records = yf_result.get("flat_records", [])
+            if yf_records:
+                append_to_record_store(yf_records)
+        except Exception as exc:
+            logger.warning("yfinance fallback failed for %s: %s", t, exc)
+
+    # MD&A text from the largest ticker (10-K + 10-Q for forward guidance)
+    mda_summary = ""
+    if plan.tickers:
+        try:
+            tk = plan.tickers[0]
+            r10k = await asyncio.to_thread(get_recent_filing_text, tk, "10-K")
+            r10q = await asyncio.to_thread(get_recent_filing_text, tk, "10-Q")
+            mda_summary = (
+                f"10-K MD&A ({tk}): {r10k.get('text','')[:3000]}\n\n"
+                f"10-Q MD&A ({tk}): {r10q.get('text','')[:3000]}"
+            )
+        except Exception as exc:
+            logger.warning("Filing text fetch failed: %s", exc)
 
     stored = get_stored_records()
-    if stored:
-        data_bundle = DataBundle(
-            source=data_bundle.source,
-            retrieval_method=data_bundle.retrieval_method,
-            records=stored,
-            metadata=data_bundle.metadata,
-            summary=data_bundle.summary,
-        )
-        logger.info("Injected %d records from side-channel store", len(stored))
-    else:
-        logger.warning("Side-channel store empty — falling back to LLM output (%d rows)", len(data_bundle.records))
+    data_bundle = DataBundle(
+        source="SEC EDGAR XBRL API",
+        retrieval_method="api",
+        records=stored,
+        metadata={
+            "companies": plan.tickers,
+            "concepts": concepts,
+            "mda_summary": mda_summary,
+        },
+        summary=f"Fetched {len(stored)} records for {len(plan.tickers)} companies via direct SEC API.",
+    )
 
     yield "status", (
         f"Data collected: {len(data_bundle.records)} records across "
